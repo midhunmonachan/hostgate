@@ -17,7 +17,7 @@ Hostgate runs an OAuth-protected MCP server on your machine. After adding it as 
 | `shell` | Runs a Bash command with `/bin/bash -lc`. |
 
 > [!IMPORTANT]
-> File tools are size-limited, but paths are not sandboxed after OAuth authorization.
+> File paths are not sandboxed after OAuth authorization.
 
 ## Requirements
 

@@ -12,8 +12,6 @@ import { z } from "zod";
 
 const PORT = Number(process.env.PORT || 8787);
 const HOST = process.env.HOST || "127.0.0.1";
-const MAX_OUTPUT = 20_000;
-const MAX_FILE_BYTES = 200_000;
 const OAUTH_USERNAME = process.env.HOSTGATE_OAUTH_USERNAME || "admin";
 const OAUTH_PASSWORD = process.env.HOSTGATE_OAUTH_PASSWORD || "";
 const ALL_SCOPE = "all";
@@ -197,6 +195,43 @@ function requireAuth(req, res, next) {
     .json({ error: "authorization_required" });
 }
 
+function parseRequestBody(req, res, next) {
+  if (!["POST", "PUT", "PATCH"].includes(req.method)) {
+    req.body = {};
+    next();
+    return;
+  }
+
+  const chunks = [];
+  req.on("data", (chunk) => {
+    chunks.push(chunk);
+  });
+  req.on("error", next);
+  req.on("end", () => {
+    const bodyText = Buffer.concat(chunks).toString("utf8");
+    const contentType = req.get("content-type") || "";
+
+    if (!bodyText) {
+      req.body = {};
+      next();
+      return;
+    }
+
+    try {
+      if (contentType.includes("application/json")) {
+        req.body = JSON.parse(bodyText);
+      } else if (contentType.includes("application/x-www-form-urlencoded")) {
+        req.body = Object.fromEntries(new URLSearchParams(bodyText));
+      } else {
+        req.body = {};
+      }
+      next();
+    } catch {
+      res.status(400).json({ error: "invalid_request_body" });
+    }
+  });
+}
+
 function resolveHostPath(requestedPath) {
   if (!requestedPath || requestedPath.includes("\0")) {
     throw new Error("Path is required.");
@@ -220,7 +255,7 @@ function collectSystemStatus() {
   };
 }
 
-function runCommand(commandSpec, timeoutMs) {
+function runCommand(commandSpec) {
   return new Promise((resolve) => {
     const child = spawn(commandSpec.cmd, commandSpec.args, {
       cwd: os.homedir(),
@@ -235,37 +270,24 @@ function runCommand(commandSpec, timeoutMs) {
 
     let stdout = "";
     let stderr = "";
-    let truncated = false;
-    const timer = setTimeout(() => child.kill("SIGTERM"), timeoutMs);
-
-    const append = (chunk, target) => {
-      const next = target + chunk.toString("utf8");
-      if (next.length > MAX_OUTPUT) {
-        truncated = true;
-        return next.slice(0, MAX_OUTPUT);
-      }
-      return next;
-    };
 
     child.stdout.on("data", (chunk) => {
-      stdout = append(chunk, stdout);
+      stdout += chunk.toString("utf8");
     });
     child.stderr.on("data", (chunk) => {
-      stderr = append(chunk, stderr);
+      stderr += chunk.toString("utf8");
     });
     child.on("error", (error) => {
-      clearTimeout(timer);
-      resolve({ exitCode: null, stdout, stderr: `${stderr}\n${error.message}`.trim(), timedOut: false, truncated });
+      resolve({ exitCode: null, stdout, stderr: `${stderr}\n${error.message}`.trim() });
     });
     child.on("close", (code, signal) => {
-      clearTimeout(timer);
-      resolve({ exitCode: code, signal, stdout, stderr, timedOut: signal === "SIGTERM", truncated });
+      resolve({ exitCode: code, signal, stdout, stderr });
     });
   });
 }
 
-function runShell(command, timeoutMs) {
-  return runCommand({ cmd: "/bin/bash", args: ["-lc", command] }, timeoutMs);
+function runShell(command) {
+  return runCommand({ cmd: "/bin/bash", args: ["-lc", command] });
 }
 
 function buildMcpServer(req) {
@@ -314,9 +336,6 @@ server.registerTool(
     requireScope(req, TOOL_SCOPES.read);
     const resolved = resolveHostPath(requestedPath);
     const file = await readFile(resolved);
-    if (file.byteLength > MAX_FILE_BYTES) {
-      throw new Error(`File is too large: ${file.byteLength} bytes > ${MAX_FILE_BYTES} bytes.`);
-    }
 
     const text = file.toString("utf8");
     return {
@@ -333,7 +352,7 @@ server.registerTool(
     description: "Use this to write a UTF-8 text file by absolute path or by path relative to the service user's home directory. This overwrites the file.",
     inputSchema: {
       path: z.string().min(1).describe("Absolute path, or a path relative to the service user's home directory."),
-      content: z.string().max(MAX_FILE_BYTES).describe("UTF-8 text content to write.")
+      content: z.string().describe("UTF-8 text content to write.")
     },
     annotations: {
       readOnlyHint: false,
@@ -359,8 +378,7 @@ server.registerTool(
     title: "Shell",
     description: "Run an unrestricted Bash command on this server. This is OAuth-protected and intentionally dangerous.",
     inputSchema: {
-      command: z.string().min(1).max(8000).describe("Bash command to run with /bin/bash -lc."),
-      timeoutMs: z.number().int().min(1000).max(120000).default(30000).describe("Maximum runtime in milliseconds.")
+      command: z.string().min(1).describe("Bash command to run with /bin/bash -lc.")
     },
     annotations: {
       readOnlyHint: false,
@@ -368,15 +386,15 @@ server.registerTool(
       openWorldHint: true
     }
   },
-  async ({ command, timeoutMs }) => {
+  async ({ command }) => {
     requireScope(req, TOOL_SCOPES.shell);
-    const result = await runShell(command, timeoutMs);
+    const result = await runShell(command);
     const structuredContent = { ...result, command };
     const parts = [
       `$ ${command}`,
       result.stdout,
       result.stderr ? `[stderr]\n${result.stderr}` : "",
-      `exit ${result.exitCode ?? "none"}${result.signal ? ` signal ${result.signal}` : ""}${result.timedOut ? " timed out" : ""}${result.truncated ? " truncated" : ""}`
+      `exit ${result.exitCode ?? "none"}${result.signal ? ` signal ${result.signal}` : ""}`
     ].filter(Boolean);
     return {
       content: [
@@ -395,8 +413,7 @@ return server;
 
 const app = express();
 app.set("trust proxy", true);
-app.use(express.json({ limit: "1mb" }));
-app.use(express.urlencoded({ extended: false }));
+app.use(parseRequestBody);
 app.get(["/health", `${PREFIX}/health`], (_req, res) => {
   res.json({ ok: true, name: "hostgate" });
 });
