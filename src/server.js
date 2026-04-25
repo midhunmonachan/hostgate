@@ -236,6 +236,12 @@ function resolveHostPath(requestedPath) {
   if (!requestedPath || requestedPath.includes("\0")) {
     throw new Error("Path is required.");
   }
+  if (requestedPath === "~") {
+    return os.homedir();
+  }
+  if (requestedPath.startsWith("~/")) {
+    return path.resolve(os.homedir(), requestedPath.slice(2));
+  }
   return path.isAbsolute(requestedPath) ? path.normalize(requestedPath) : path.resolve(os.homedir(), requestedPath);
 }
 
