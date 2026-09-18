@@ -1,46 +1,34 @@
 # Hostgate
 
-Connect ChatGPT to your own computer through an OAuth-protected MCP server.
+Give ChatGPT controlled access to your computer
 
-[Overview](#overview) • [Install](#install) • [Connect to ChatGPT](#connect-to-chatgpt) • [Tools](#tools) • [Security](#security) • [Troubleshooting](#troubleshooting)
+[Overview](#overview) • [Install](#install) • [Connect](#connect) • [Tools](#tools) • [Security](#security) • [FAQ](#faq)
 
 ---
 
 ## Overview
 
-Hostgate lets ChatGPT read files, write files, run commands, and inspect the computer where Hostgate is running.
+Hostgate is an OAuth-protected MCP server that lets ChatGPT inspect your computer, read and write text files, and run commands locally.
 
-It supports:
-
-- Windows with PowerShell
-- Linux with Bash
-- ChatGPT custom apps using MCP and OAuth
-- Local use or remote access through an HTTPS endpoint such as Tailscale Funnel
-
-Hostgate is not a sandbox. It can use the permissions of the account running it.
-
-## Requirements
-
-- Node.js 22 or newer
-- npm
-- Windows PowerShell 5.1 or Linux Bash
-- An HTTPS endpoint reachable by ChatGPT
-- A ChatGPT account/workspace that can use custom MCP apps
+Works on Windows and Linux.
 
 ## Install
 
-Clone the repository and install its dependencies.
+Requirements: Node.js 22+, npm, and an HTTPS endpoint that ChatGPT can reach.
 
 ### Windows
 
-Open a normal, non-administrator PowerShell window:
+Open a normal PowerShell window:
 
 ```powershell
 git clone https://github.com/midhunmonachan/hostgate.git
-Set-Location .\hostgate
+cd hostgate
 npm.cmd ci
 node .\bin\hostgate.js onboard
+node .\bin\hostgate.js start
 ```
+
+Keep this terminal open. Press `Ctrl+C` to stop Hostgate.
 
 ### Linux
 
@@ -51,117 +39,105 @@ npm ci
 node bin/hostgate.js onboard
 ```
 
-During onboarding, choose a username and a strong password for Hostgate. Do not share these credentials.
-
-On Windows, start Hostgate in the foreground:
-
-```powershell
-node .\bin\hostgate.js start
-```
-
-Keep this terminal open. Press `Ctrl+C` to stop it.
-
-On Linux, onboarding configures a user-level systemd service. Check it with:
+Linux onboarding starts a user-level systemd service. Check it with:
 
 ```bash
 node bin/hostgate.js status
 node bin/hostgate.js logs -f
 ```
 
-You can also run Linux in the foreground with `node bin/hostgate.js start`.
+During onboarding, choose a Hostgate username and a strong password. Keep both private.
 
-## Connect to ChatGPT
+## Connect
 
-ChatGPT needs a public HTTPS MCP URL. Tailscale Funnel is one option:
+ChatGPT connects to the server over HTTPS. Tailscale Funnel is one way to expose Hostgate:
 
 ```text
 tailscale funnel --yes --bg --set-path=/hostgate http://127.0.0.1:8787/hostgate
 ```
 
-Your MCP URL will be:
+Use this MCP URL:
 
 ```text
-https://<your-hostname>/hostgate/mcp
+https://<your-tailscale-hostname>/hostgate/mcp
 ```
 
 In ChatGPT on the web:
 
-1. Open [ChatGPT Plugins](https://chatgpt.com/plugins).
-2. Select **Create app**.
-3. Choose **Server URL**.
-4. Enter your `/hostgate/mcp` URL.
-5. Choose **OAuth** and create the app.
-6. Select **Connect another account**.
-7. Enter the Hostgate username and password you chose during onboarding.
-8. Refresh the app details so the actions appear.
-9. Enable **Allow all actions** only if you accept full access for the Hostgate account.
+1. Open **Settings → Apps** and choose **Create**, or open [ChatGPT Plugins](https://chatgpt.com/plugins) if that is the interface shown for your account.
+2. Choose **Server URL** and enter your `/hostgate/mcp` URL.
+3. Choose **OAuth**.
+4. Scan the tools, then create the app.
+5. Open the app’s connection settings and choose **Connect another account**.
+6. Enter the Hostgate username and password from onboarding.
+7. Refresh the app details so the actions appear.
+8. Enable **Allow all actions** only if you accept full access for the Hostgate account.
 
-Start with a harmless test such as:
+Start with safe prompts:
 
 ```text
-Use Hostgate status to report the operating system and hostname.
+Use Hostgate status to show the operating system and hostname.
 ```
-
-Then test a read-only command:
 
 ```text
 Use Hostgate shell to run Get-Date on Windows, or date on Linux.
 ```
 
+OpenAI’s current custom MCP app instructions are in the [Developer mode and MCP apps guide](https://help.openai.com/en/articles/12584461-developer-mode-and-mcp-apps-in-chatgpt).
+
 ## Tools
 
-Hostgate exposes exactly four MCP tools:
-
-| Tool | Purpose |
+| Tool | Does |
 | --- | --- |
-| `status` | Reports basic system information. |
+| `status` | Shows basic system information. |
 | `read` | Reads a UTF-8 text file. |
 | `write` | Creates or overwrites a UTF-8 text file. |
-| `shell` | Runs a PowerShell or Bash command. |
+| `shell` | Runs PowerShell on Windows or Bash on Linux. |
 
-`write` overwrites files and `shell` can run arbitrary commands. Use disposable files and harmless commands while testing.
+Hostgate exposes exactly these four MCP tools.
 
 ## Security
 
-Hostgate provides access to the machine, not an isolated environment.
+Hostgate is not a sandbox. `write` can overwrite files and `shell` can run commands with the permissions of the account running Hostgate.
 
-- Run it under a dedicated, non-administrator account when possible.
+- Use a dedicated, non-administrator account when possible.
 - Use a strong, unique Hostgate password.
-- Keep the default local bind address unless you need another one.
-- Use HTTPS for remote connections.
-- Treat the `.env` file, OAuth state, tokens, command output, and files as sensitive.
-- Never commit credentials, tokens, `.env` files, OAuth state, or `node_modules`.
-- Review every action before allowing it to run.
+- Review every action before allowing it.
+- Use HTTPS for remote access.
+- Treat credentials, OAuth state, tokens, files, and command output as sensitive.
+- Never commit `.env`, OAuth state, tokens, or `node_modules`.
 
 Tailscale Funnel makes the endpoint reachable from the public internet. Read the [Tailscale Funnel documentation](https://tailscale.com/kb/1223/funnel) before enabling it.
 
-## Troubleshooting
+## FAQ
 
-Check the local health endpoint:
+### ChatGPT does not show any actions
+
+Confirm that Hostgate is running, the `/hostgate/mcp` URL is reachable over HTTPS, OAuth is selected, and the account is connected. Then refresh the app details.
+
+### Check whether Hostgate is running
+
+Open this URL on the computer running Hostgate:
 
 ```text
 http://127.0.0.1:8787/hostgate/health
 ```
 
-It should return:
+The expected response is:
 
 ```json
 {"ok":true,"name":"hostgate"}
 ```
 
-If ChatGPT does not show actions:
+### Why does a command behave differently through ChatGPT?
 
-1. Confirm Hostgate is running.
-2. Confirm the public `/hostgate/mcp` URL is reachable over HTTPS.
-3. Reconnect the account using **Connect another account**.
-4. Refresh the app details.
-5. Check that OAuth is selected and the credentials are correct.
+Hostgate runs as the account that started it. That account may have a different home directory, PATH, or permissions.
 
-If a command works locally but not through ChatGPT, remember that Hostgate runs commands as the account that started the server. That account may have a different home directory, PATH, or permissions.
+### Does Windows install a background service?
+
+No. Windows runs Hostgate in the foreground with `node .\bin\hostgate.js start`. Linux onboarding uses a user-level systemd service.
 
 ## Development
-
-Run the project checks before submitting changes:
 
 ```bash
 npm run check
