@@ -220,6 +220,32 @@ Windows managed startup uses a current-user Task Scheduler logon task and a supe
 
 ## Windows managed startup and recovery
 
+### Preview installation without changing this computer
+
+From the checkout on Windows:
+
+```powershell
+node .\bin\hostgate.js service plan
+node .\bin\hostgate.js service prepare --json --environment-source stdin
+node .\bin\hostgate.js service plan --npm-cli "C:\path\to\npm\bin\npm-cli.js"
+```
+
+**Both commands are the same read-only planner.** `prepare` does not build a release, install dependencies, import credentials, or activate anything. `--help` lists options; `--expect FULL_COMMIT` pins the expected local commit. The plan shows checks, proposed paths and task XML/command, and every future installation effect requiring separate authorization.
+
+It checks local Git metadata, committed `main`, tracked/untracked cleanliness, a credential-free GitHub origin, the current Node executable, and npm metadata/Node compatibility without executing npm. It does not fetch remote HEAD. Existing or linked managed paths and configured external Git filters are blockers; nothing is removed, stashed, or ignored to clear them.
+
+`--environment-source stdin|saved-file|launcher` declares the intended input method. Saved-file checks inspect only existence/type; stdin and launcher values are **never read or enumerated**, and no saved environment or OAuth state is opened/decrypted. Input availability, validity, provenance, and equality with a live launcher remain unverified where they cannot be established without reading values.
+
+Windows checks inspect the current token identity, the nearest existing directory ACL, native DPAPI-library presence, and Task Scheduler XML using **TASK_VALIDATE_ONLY (1)**. They do not test encryption, create directories, change ACLs, register/run tasks, inspect/adopt a PID, open a test listener, or restart. ACL feasibility is advisory, and XML validity does not prove registration permission, runtime binding, or reboot recovery. Native `whoami`/`cscript` probes avoid PowerShell startup-cache writes. Disabled/unavailable native scripting or COM checks fail without a mutation or policy-change fallback. Defaults assume Windows under `C:\Windows` and Git under `C:\Program Files\Git`; explicit `--git-path` and `--cscript-path` select alternate trusted executables, not policy overrides.
+
+The stable `hostgate-plan-v1:...` **approval token is a non-secret review fingerprint**, not proof of human consent, an OAuth credential, or platform approval. Identical observed plans yield the same token; relevant observations change it. No installer consumes it, and it cannot queue or authorize activation. Rerun planning before any separately approved installation. Shell/write warnings and all four full-authority MCP tools are unchanged; a planner invocation does not turn the shell tool into a read-only tool.
+
+Exit codes: `0` means observed checks passed (unverified items can remain), `1` means blockers, and `2` means invalid arguments. Reports can disclose local paths, account identifiers, and repository URLs; review before sharing. This addition does not fix the existing installer's initial-adoption rollback or partial-install recovery limitations.
+
+References: [Task Scheduler validation-only flag](https://learn.microsoft.com/en-us/windows/win32/taskschd/taskfolder-registertask), [read-only ACL retrieval](https://learn.microsoft.com/en-us/windows/win32/api/iads/nf-iads-iadssecurityutility-getsecuritydescriptor). Checked September 18, 2026.
+
+### Install or operate the managed service
+
 After onboarding, run `node bin/hostgate.js service install --yes`. It requires committed `main` source, a credential-free GitHub `origin`, and npm. Dependencies are installed and checks/tests pass in a new release directory **before** the supervisor starts. Existing untracked developer files are not copied. Installation does not change the Hostgate password or OAuth state.
 
 The installation creates `%USERPROFILE%\.config\hostgate\managed`, restricts its ACL to the current user and SYSTEM, saves the environment as current-user DPAPI ciphertext, and copies the existing Node executable into a private stable runtime. The task runs non-elevated as that same account with no Windows password stored. A logon trigger starts it after sign-in; Task Scheduler retries supervisor failures, and the supervisor restarts crashed server children with backoff. It runs on battery without a scheduled execution-time limit. This is **post-logon recovery**, not a boot-before-login service. Do not use installation to silently change an elevated server's account or token privileges.

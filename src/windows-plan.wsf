@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<job id="HostgateReadOnlyPlan">
+<script language="JScript"><![CDATA[
+// Native COM observation only. No environment access, CLR/PowerShell startup
+// profiling, process control, encryption, or file/task writes are implemented.
+function fail() { throw new Error("Read-only validation failed"); }
+function quote(s) {
+  return '"' + String(s).replace(/[\\"\x00-\x1f\x7f-\uffff]/g, function(c) {
+    var h = c.charCodeAt(0).toString(16); return "\\u" + ("0000" + h).slice(-4);
+  }) + '"';
+}
+function json(v) {
+  if (v === null) return "null";
+  if (typeof v === "boolean" || typeof v === "number") return String(v);
+  if (typeof v === "string") return quote(v);
+  var entries = [], k;
+  if (v instanceof Array) { for (k = 0; k < v.length; k++) entries.push(json(v[k])); return "[" + entries.join(",") + "]"; }
+  for (k in v) if (Object.prototype.hasOwnProperty.call(v, k)) entries.push(quote(k) + ":" + json(v[k]));
+  return "{" + entries.join(",") + "}";
+}
+function xml(text) {
+  var doc = new ActiveXObject("Msxml2.DOMDocument.6.0");
+  doc.async = false; doc.resolveExternals = false; doc.validateOnParse = false;
+  doc.setProperty("ProhibitDTD", true);
+  if (!doc.loadXML(text)) fail();
+  return doc;
+}
+function text(doc, xpath) { var node = doc.selectSingleNode(xpath); if (!node) fail(); return node.text; }
+function localPath(value) {
+  if (!/^[A-Za-z]:\\/.test(value) || /[\x00-\x1f\x7f"<>|?*%!]/.test(value) || value.slice(2).indexOf(":") !== -1) fail();
+  return value;
+}
+function taskExists(folder, name) {
+  try { folder.GetTask(name); return true; }
+  catch (e) { if (e.number === -2147024894) return false; throw e; }
+}
+try {
+  var input = WScript.StdIn.ReadAll();
+  if (input.length > 65536) fail();
+  var request = xml(input), mode = text(request, "/request/mode");
+  var sid = text(request, "/request/sid");
+  if (!/^S-1-(?:[0-9]+-)*[0-9]+$/.test(sid)) fail();
+  var fs = new ActiveXObject("Scripting.FileSystemObject");
+  var result;
+  if (mode === "inspect") {
+    var ancestor = localPath(text(request, "/request/ancestor"));
+    // Node verified every ancestor with lstat; check native reparse metadata too.
+    var folderInfo = fs.GetFolder(ancestor);
+    if ((folderInfo.Attributes & 1024) !== 0) fail();
+    var acl = { readable: false, ancestor: ancestor, createChildIndicated: false, effectiveAccessTested: false, changesMade: false };
+    try {
+      var utility = new ActiveXObject("ADsSecurityUtility");
+      utility.SecurityMask = 7; // In-memory query selection: OWNER | GROUP | DACL, never SACL.
+      var descriptor = utility.GetSecurityDescriptor(ancestor, 1, 1); // FILE, IID
+      var network = new ActiveXObject("WScript.Network");
+      var principals = {};
+      principals[(network.UserDomain + "\\" + network.UserName).toLowerCase()] = true;
+      principals[sid.toLowerCase()] = true;
+      var nodes = request.selectNodes("/request/principals/item");
+      for (var p = 0; p < nodes.length; p++) principals[nodes.item(p).text.toLowerCase()] = true;
+      var allow = 0, deny = 0;
+      for (var rules = new Enumerator(descriptor.DiscretionaryAcl); !rules.atEnd(); rules.moveNext()) {
+        var rule = rules.item();
+        if (!principals[String(rule.Trustee).toLowerCase()] || (rule.AceFlags & 8) !== 0) continue;
+        if (rule.AceType === 0) allow |= rule.AccessMask;
+        if (rule.AceType === 1) deny |= rule.AccessMask;
+      }
+      // Advisory only: token restrictions, deny-only groups and effective access
+      // can differ. A write test would violate the planner's contract.
+      acl = { readable: true, ancestor: ancestor, owner: String(descriptor.Owner),
+        descriptorHex: String(utility.GetSecurityDescriptor(ancestor, 1, 3)),
+        createChildIndicated: (allow & 4) === 4 && (deny & 4) === 0,
+        effectiveAccessTested: false, changesMade: false };
+    } catch (ignored) { }
+    var system = fs.GetSpecialFolder(1).Path;
+    result = { dpapiAvailable: fs.FileExists(system + "\\crypt32.dll"),
+      encryptionTested: false, decryptionTested: false, acl: acl };
+  } else if (mode === "validate") {
+    var name = text(request, "/request/name");
+    var directory = localPath(text(request, "/request/directory"));
+    var executable = localPath(text(request, "/request/executable"));
+    var supervisor = localPath(text(request, "/request/supervisor"));
+    var args = text(request, "/request/arguments");
+    if (!/^Hostgate-[a-f0-9]{12}$/.test(name) || args !== '"' + supervisor + '" "' + directory + '"' ||
+        fs.GetFileName(executable).toLowerCase() !== "node.exe" || fs.GetFileName(supervisor).toLowerCase() !== "supervisor.js") fail();
+    var taskXml = text(request, "/request/taskXml"), task = xml(taskXml);
+    task.setProperty("SelectionNamespaces", "xmlns:t='http://schemas.microsoft.com/windows/2004/02/mit/task'");
+    if (task.selectNodes("/t:Task/t:Actions/*").length !== 1 || task.selectNodes("/t:Task/t:Triggers/*").length !== 1 || task.selectNodes("/t:Task/t:Principals/*").length !== 1) fail();
+    if (text(task, "/t:Task/t:Actions/t:Exec/t:Command") !== executable || text(task, "/t:Task/t:Actions/t:Exec/t:Arguments") !== args ||
+        text(task, "/t:Task/t:Actions/t:Exec/t:WorkingDirectory") !== directory || text(task, "/t:Task/t:Principals/t:Principal/t:UserId") !== sid ||
+        text(task, "/t:Task/t:Principals/t:Principal/t:LogonType") !== "InteractiveToken" || text(task, "/t:Task/t:Principals/t:Principal/t:RunLevel") !== "LeastPrivilege" ||
+        text(task, "/t:Task/t:Triggers/t:LogonTrigger/t:UserId") !== sid) fail();
+    var scheduler = new ActiveXObject("Schedule.Service"); scheduler.Connect();
+    var taskFolder = scheduler.GetFolder("\\"), before = taskExists(taskFolder, name);
+    // Microsoft TASK_VALIDATE_ONLY = 1 checks XML WITHOUT registration.
+    // The flag is literal; no CREATE/UPDATE fallback or task-run method exists.
+    taskFolder.RegisterTask(name, taskXml, 1, sid, null, 3);
+    if (before !== taskExists(taskFolder, name)) fail();
+    result = { xmlValid: true, commandMatches: true, existingTask: before, validationFlag: 1, taskRegistered: false };
+  } else fail();
+  WScript.StdOut.Write(json(result));
+} catch (error) {
+  WScript.StdErr.Write("Read-only native Windows validation was unavailable. No mutation fallback exists.");
+  WScript.Quit(1);
+}
+]]></script>
+</job>

@@ -27,6 +27,7 @@ Usage:
   hostgate onboard      Configure; install/start a user service on Linux only
   hostgate start        Run in the foreground with saved configuration
   hostgate service      Windows managed install/start/restart/status
+  hostgate service plan Read-only install preview (prepare is an alias)
   hostgate update       Check/apply a confirmed GitHub update or rollback
   hostgate doctor [--json] [--url HTTPS_URL]  Check setup without changing it
   hostgate status       Linux: service status; Windows: HTTP health check
@@ -421,6 +422,12 @@ try {
       await startForeground();
       break;
     case "service": {
+      if (["plan", "prepare"].includes(args[0])) {
+        // Route before importing the installer or calling any environment provider.
+        const { servicePlanCli } = await import("../src/service-plan.js");
+        process.exitCode = await servicePlanCli(args.slice(1), projectRoot);
+        break;
+      }
       const { serviceCli } = await import("../src/service-manager.js");
       await serviceCli(args, projectRoot, serverEnvironment);
       break;
