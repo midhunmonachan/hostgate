@@ -1,5 +1,6 @@
 import express from "express";
 import { runShell } from "./shell.js";
+import { isObject, validateRegistration, validateClientRedirect, validateAuthorization, validCodeVerifier } from "./oauth-validation.js";
 import crypto from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -221,7 +222,16 @@ function parseRequestBody(req, res, next) {
       if (contentType.includes("application/json")) {
         req.body = JSON.parse(bodyText);
       } else if (contentType.includes("application/x-www-form-urlencoded")) {
-        req.body = Object.fromEntries(new URLSearchParams(bodyText));
+        const form = new URLSearchParams(bodyText);
+        // Reject ambiguous OAuth scalar fields without changing MCP body semantics.
+        if (/^\/(?:hostgate\/)?oauth\/(?:register|authorize|token)\/?$/i.test(req.path) &&
+            ["response_type", "client_id", "redirect_uri", "code_challenge", "code_challenge_method",
+              "state", "scope", "username", "password", "grant_type", "code", "code_verifier"]
+              .some((key) => form.getAll(key).length > 1)) {
+          res.status(400).json({ error: "invalid_request" });
+          return;
+        }
+        req.body = Object.fromEntries(form);
       } else {
         req.body = {};
       }
@@ -410,11 +420,16 @@ app.get([
 });
 
 app.post(["/oauth/register", `${PREFIX}/oauth/register`], (req, res) => {
+  const error = validateRegistration(req.body);
+  if (error) {
+    res.status(400).json({ error });
+    return;
+  }
   const clientId = randomToken(18);
   const client = {
     clientId,
-    clientName: req.body.client_name || "ChatGPT",
-    redirectUris: Array.isArray(req.body.redirect_uris) ? req.body.redirect_uris : [],
+    clientName: req.body.client_name || "OAuth client",
+    redirectUris: [...req.body.redirect_uris],
     createdAt: Date.now()
   };
   clients.set(clientId, client);
@@ -438,7 +453,22 @@ function htmlEscape(value) {
     .replaceAll('"', "&quot;");
 }
 
+function rejectAuthorization(res, message) {
+  // Do not display a credential form or redirect to an invalid/unregistered callback.
+  res.status(400).type("html").send(`<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Cannot authorize Hostgate</title></head>
+<body>
+  <h1>Cannot authorize Hostgate</h1>
+  <p>${htmlEscape(message)}</p>
+  <p>Return to the app connection settings and register a valid client before trying again.</p>
+</body>
+</html>`);
+}
+
 function renderLoginForm(params, basePath, error = "") {
+  const client = clients.get(params.client_id);
+  const clientName = typeof client?.clientName === "string" ? client.clientName : "OAuth client";
   const hiddenInputs = Object.entries(params)
     .map(([key, value]) => `<input type="hidden" name="${htmlEscape(key)}" value="${htmlEscape(value || "")}">`)
     .join("\n");
@@ -462,7 +492,9 @@ function renderLoginForm(params, basePath, error = "") {
 <body>
   <main>
     <h1>Authorize Hostgate</h1>
-    <p>This grants ChatGPT access to the OAuth-protected MCP tools on this server.</p>
+    <p>This grants the requesting application access to the OAuth-protected MCP tools on this server.</p>
+    <p>Application (self-reported): <strong>${htmlEscape(clientName)}</strong><br>Callback: <code>${htmlEscape(params.redirect_uri)}</code></p>
+    <p>The application name is not proof of identity. Continue only for the connection you started.</p>
     ${error ? `<p class="error">${htmlEscape(error)}</p>` : ""}
     <form method="post" action="${basePath}/oauth/authorize">
       ${hiddenInputs}
@@ -476,21 +508,12 @@ function renderLoginForm(params, basePath, error = "") {
 }
 
 function validateAuthorizeParams(params) {
-  if (params.response_type !== "code") {
-    return "Unsupported response_type.";
-  }
-  if (!params.client_id || !params.redirect_uri || !params.code_challenge || params.code_challenge_method !== "S256") {
-    return "Missing required OAuth parameters.";
-  }
+  const error = validateAuthorization(params, clients.get(params.client_id));
+  if (error) return error;
   try {
     normalizeRequestedScopes(params.scope);
-  } catch (error) {
-    return error.message;
-  }
-
-  const client = clients.get(params.client_id);
-  if (client && client.redirectUris.length > 0 && !client.redirectUris.includes(params.redirect_uri)) {
-    return "Redirect URI is not registered for this client.";
+  } catch {
+    return "Unsupported OAuth scope.";
   }
   return "";
 }
@@ -506,10 +529,18 @@ app.get(["/oauth/authorize", `${PREFIX}/oauth/authorize`], (req, res) => {
     scope: req.query.scope
   };
   const error = validateAuthorizeParams(params);
-  res.status(error ? 400 : 200).type("html").send(renderLoginForm(params, requestBasePath(req), error));
+  if (error) {
+    rejectAuthorization(res, error);
+    return;
+  }
+  res.type("html").send(renderLoginForm(params, requestBasePath(req)));
 });
 
 app.post(["/oauth/authorize", `${PREFIX}/oauth/authorize`], (req, res) => {
+  if (!isObject(req.body)) {
+    rejectAuthorization(res, "Invalid OAuth parameters.");
+    return;
+  }
   const params = {
     response_type: req.body.response_type,
     client_id: req.body.client_id,
@@ -522,11 +553,12 @@ app.post(["/oauth/authorize", `${PREFIX}/oauth/authorize`], (req, res) => {
 
   const error = validateAuthorizeParams(params);
   if (error) {
-    res.status(400).type("html").send(renderLoginForm(params, requestBasePath(req), error));
+    rejectAuthorization(res, error);
     return;
   }
 
-  if (!OAUTH_PASSWORD || req.body.username !== OAUTH_USERNAME || !timingSafeEqualString(req.body.password || "", OAUTH_PASSWORD)) {
+  if (!OAUTH_PASSWORD || typeof req.body.username !== "string" || typeof req.body.password !== "string" ||
+      req.body.username !== OAUTH_USERNAME || !timingSafeEqualString(req.body.password, OAUTH_PASSWORD)) {
     res.status(401).type("html").send(renderLoginForm(params, requestBasePath(req), "Invalid username or password."));
     return;
   }
@@ -549,6 +581,10 @@ app.post(["/oauth/authorize", `${PREFIX}/oauth/authorize`], (req, res) => {
 });
 
 app.post(["/oauth/token", `${PREFIX}/oauth/token`], (req, res) => {
+  if (!isObject(req.body)) {
+    res.status(400).json({ error: "invalid_request" });
+    return;
+  }
   if (req.body.grant_type !== "authorization_code") {
     res.status(400).json({ error: "unsupported_grant_type" });
     return;
@@ -560,12 +596,17 @@ app.post(["/oauth/token", `${PREFIX}/oauth/token`], (req, res) => {
     res.status(400).json({ error: "invalid_grant" });
     return;
   }
-  if (record.clientId !== req.body.client_id || record.redirectUri !== req.body.redirect_uri) {
+  if (record.clientId !== req.body.client_id || record.redirectUri !== req.body.redirect_uri ||
+      validateClientRedirect(req.body.client_id, req.body.redirect_uri, clients.get(req.body.client_id))) {
     res.status(400).json({ error: "invalid_grant" });
     return;
   }
 
-  const verifier = req.body.code_verifier || "";
+  const verifier = req.body.code_verifier;
+  if (!validCodeVerifier(verifier)) {
+    res.status(400).json({ error: "invalid_grant" });
+    return;
+  }
   const challenge = crypto.createHash("sha256").update(verifier).digest("base64url");
   if (!timingSafeEqualString(challenge, record.codeChallenge)) {
     res.status(400).json({ error: "invalid_grant" });

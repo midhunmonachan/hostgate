@@ -136,6 +136,20 @@ Hostgate is not a sandbox. `write` can overwrite files and `shell` can run comma
 
 Tailscale Funnel makes the endpoint reachable from the public internet. Read the [Tailscale Funnel documentation](https://tailscale.com/kb/1223/funnel) before enabling it.
 
+### OAuth validation and upgrades
+
+Authorization now requires a registered client and an exact match to its registered callback URL. An invalid client or callback receives an error without a password form or redirect. The login page shows the callback and the application's **self-reported** name; that name alone does not establish that the requester is ChatGPT. Continue only for a connection you initiated.
+
+Dynamic client registration remains available. Callbacks must be absolute HTTPS URLs, without user information or fragments. Literal loopback HTTP callbacks (`127.0.0.1` or `[::1]`) remain supported for local clients and tests; their ports must also match exactly. HTTP hostname callbacks such as `localhost`, custom URI schemes, and callback wildcards are not supported. Registration rejects empty/invalid callback lists, invalid display names, unsupported client-authentication methods, and incompatible flow metadata. Unknown metadata is ignored. The response still selects the existing public-client `none` / `authorization_code` / `code` combination, even if the request includes additional grants such as `refresh_token`; refresh tokens are not issued.
+
+S256 is required. Its challenge must be 43 base64url characters; the verifier must be 43–128 unreserved ASCII characters. Malformed scalar parameters and repeated form-encoded OAuth scalar fields are rejected. A failed exchange for a parsed authorization code retains the existing single-use behavior; obtain a new code rather than retry that code. These are authentication checks, not limits on authorized filesystem or shell access. Both root and `/hostgate` routes, all existing scopes, the default full-access grant, and exactly four MCP tools remain unchanged.
+
+**Upgrade compatibility:** no state-file migration, credential rotation, client-ID replacement, or automatic token revocation occurs. Existing valid registrations and unexpired bearer tokens remain usable, including tokens loaded from the existing version-1 state format. Malformed legacy registrations are retained on disk but cannot obtain new authorization codes. Already-issued tokens are not retroactively revoked. If a connection has missing or invalid callback metadata, register a new OAuth client using the app connection setup and the exact callback shown for that connection. Recreating the affected MCP connection may be necessary because clients can reuse their original registration. Do not delete OAuth state or replace Hostgate credentials to repair callback metadata.
+
+A normal server restart is required to load updated validation code; editing the checkout does not update an already-running process. Before restarting an environment-only deployment, preserve its original launcher configuration. This validation slice does not add brute-force protection, request-size limits, browser-bound approval transactions, token revocation, resource/audience binding, or stronger proof of ChatGPT client identity; those remain separate perimeter-security work.
+
+Implementation references: [OpenAI authentication and callback requirements](https://developers.openai.com/plugins/build/auth), [RFC 7591 registration](https://www.rfc-editor.org/rfc/rfc7591.html), [RFC 9700 exact redirect matching](https://www.rfc-editor.org/rfc/rfc9700.html#section-2.1), and [RFC 7636 PKCE](https://www.rfc-editor.org/rfc/rfc7636.html). OpenAI guidance was checked on September 18, 2026. Hostgate continues to advertise DCR, not Client ID Metadata Documents; this update does not change issuer discovery or add `iss` support.
+
 ## FAQ
 
 ### ChatGPT does not show any actions
