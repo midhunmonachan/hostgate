@@ -4,12 +4,13 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import readline from "node:readline/promises";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, "..");
 const serviceName = "hostgate.service";
+const isWindows = process.platform === "win32";
 const configDir = path.join(os.homedir(), ".config/hostgate");
 const serviceDir = path.join(os.homedir(), ".config/systemd/user");
 const servicePath = path.join(serviceDir, serviceName);
@@ -22,10 +23,14 @@ function usage() {
   console.log(`Hostgate service manager
 
 Usage:
-  hostgate onboard      Configure, install, and start Hostgate
-  hostgate status        Show service status
-  hostgate logs [-f]     Show service logs, optionally follow
-  hostgate help          Show this help
+  hostgate onboard      Configure; install/start a user service on Linux only
+  hostgate start        Run in the foreground with saved configuration
+  hostgate status       Linux: service status; Windows: HTTP health check
+  hostgate logs [-f]     Linux: journal logs; Windows: use foreground output
+  hostgate help         Show this help
+
+Windows: no automatic Windows service, autostart, or log history is installed.
+Run hostgate start in a terminal and keep it open.
 `);
 }
 
@@ -45,12 +50,17 @@ function run(command, args, options = {}) {
 }
 
 function systemctl(args, options) {
+  if (process.platform !== "linux") {
+    throw new Error("Automatic service management requires Linux with systemd --user. Use hostgate start for foreground operation.");
+  }
   return run("systemctl", ["--user", ...args], options);
 }
 
 function commandExists(command) {
-  const result = run("sh", ["-lc", `command -v ${command}`], { capture: true, allowFailure: true });
-  return result.status === 0;
+  const result = spawnSync(isWindows ? "where.exe" : "sh",
+    isWindows ? [command] : ["-lc", 'command -v "$1"', "sh", command],
+    { encoding: "utf8", windowsHide: true });
+  return !result.error && result.status === 0;
 }
 
 function parseEnv(text) {
@@ -191,11 +201,17 @@ function configureTailscale(values) {
 }
 
 function serviceIsActive() {
+  if (isWindows) {
+    return false;
+  }
   const result = systemctl(["is-active", "--quiet", serviceName], { capture: true, allowFailure: true });
   return result.status === 0;
 }
 
 function serviceStatusText(serviceOk) {
+  if (isWindows) {
+    return "Configuration saved. No Windows service was installed or started.\nStart in a terminal: hostgate start";
+  }
   return serviceOk ? `${serviceName} installed and running` : `${serviceName} installed but not running`;
 }
 
@@ -205,6 +221,9 @@ function writeServiceFile() {
 }
 
 function installService() {
+  if (isWindows) {
+    return;
+  }
   writeServiceFile();
   systemctl(["daemon-reload"]);
   systemctl(["enable", serviceName]);
@@ -215,7 +234,7 @@ function printOnboardSummary(values, exposure, serviceOk) {
   const connectorUrl = exposure?.ok && exposure.url ? exposure.url : "https://<your-domain>/hostgate/mcp";
 
   console.log("");
-  console.log("Ready");
+  console.log(isWindows ? "Configured" : "Ready");
   console.log("-----");
   console.log(serviceStatusText(serviceOk));
   if (exposure?.ok && exposure.url) {
@@ -256,11 +275,19 @@ function printOnboardSummary(values, exposure, serviceOk) {
 
   if (!serviceOk) {
     console.log("");
-    console.log("Check logs: hostgate logs -f");
+    console.log(isWindows
+      ? "Logs appear in the hostgate start terminal. Windows service installation, autostart, and log history are not managed by this CLI."
+      : "Check logs: hostgate logs -f");
   }
 }
 
 async function onboard() {
+  if (!isWindows && process.platform !== "linux") {
+    throw new Error("Onboarding supports Windows (foreground) and Linux (systemd --user). Configure the environment and use hostgate start on other platforms.");
+  }
+  if (!isWindows && !commandExists("systemctl")) {
+    throw new Error("Linux onboarding requires systemctl on PATH and a working systemd --user session. Use hostgate start for foreground operation.");
+  }
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     throw new Error("hostgate onboard must be run in an interactive terminal.");
   }
@@ -271,6 +298,11 @@ async function onboard() {
   try {
     console.log("Hostgate onboarding");
     console.log("-------------------");
+    console.log("Password input is visible in this terminal. Do not record or share this session.");
+    if (isWindows) {
+      console.log("Windows foreground mode: no service or autostart will be installed.");
+      console.log(`Protect ${configDir} with Windows ACLs; POSIX file modes do not restrict Windows access.`);
+    }
     values.set("PORT", values.get("PORT") || "8787");
     values.set("HOST", values.get("HOST") || "127.0.0.1");
     values.set("HOSTGATE_OAUTH_USERNAME", await askRequired(rl, "OAuth username", values.get("HOSTGATE_OAUTH_USERNAME"), "admin"));
@@ -310,7 +342,53 @@ WantedBy=default.target
 }
 
 function logs(follow) {
+  if (isWindows) {
+    throw new Error("Windows log history is not managed by Hostgate. Run hostgate start and read stdout/stderr in that terminal; configure your own protected log capture if needed.");
+  }
+  if (process.platform !== "linux") {
+    throw new Error("hostgate logs requires Linux journalctl. Foreground logs are written to stdout/stderr.");
+  }
   run("journalctl", ["--user", "-u", serviceName, "-n", "100", "--no-pager", ...(follow ? ["-f"] : [])]);
+}
+
+function serverEnvironment() {
+  // Keep the existing raw KEY=VALUE format: quotes and # in passwords are literal.
+  return { ...Object.fromEntries(defaultEnvValues()), ...process.env };
+}
+
+async function startForeground() {
+  const env = serverEnvironment();
+  if (!env.HOSTGATE_OAUTH_PASSWORD) {
+    throw new Error("OAuth password is not configured. Run hostgate onboard or set HOSTGATE_OAUTH_PASSWORD before hostgate start.");
+  }
+  for (const [key, value] of Object.entries(env)) {
+    process.env[key] = value;
+  }
+  // Run in this process so Ctrl+C does not leave an unmanaged server child behind.
+  await import(pathToFileURL(serverPath).href);
+}
+
+async function status() {
+  if (!isWindows) {
+    systemctl(["status", serviceName, "--no-pager"]);
+    return;
+  }
+  const env = serverEnvironment();
+  const configuredHost = env.HOST || "127.0.0.1";
+  const host = configuredHost === "::" ? "::1" : localTargetHost(configuredHost);
+  const authority = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+  const url = `http://${authority}:${env.PORT || "8787"}/hostgate/health`;
+  console.log("Windows: checking HTTP health, not Windows service status.");
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(3000), redirect: "error" });
+    const health = await response.json();
+    if (!response.ok || health.ok !== true || health.name !== "hostgate") {
+      throw new Error("Unexpected health response.");
+    }
+    console.log(`Hostgate is responding at ${url}`);
+  } catch {
+    throw new Error(`Hostgate is not responding at ${url}. Run hostgate start in another terminal and inspect its output.`);
+  }
 }
 
 try {
@@ -320,8 +398,11 @@ try {
     case "setup":
       await onboard();
       break;
+    case "start":
+      await startForeground();
+      break;
     case "status":
-      systemctl(["status", serviceName, "--no-pager"]);
+      await status();
       break;
     case "logs":
       logs(args.includes("-f") || args.includes("--follow"));

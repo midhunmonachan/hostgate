@@ -1,5 +1,5 @@
 import express from "express";
-import { spawn } from "node:child_process";
+import { runShell } from "./shell.js";
 import crypto from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -239,7 +239,7 @@ function resolveHostPath(requestedPath) {
   if (requestedPath === "~") {
     return os.homedir();
   }
-  if (requestedPath.startsWith("~/")) {
+  if (requestedPath.startsWith("~/") || (process.platform === "win32" && requestedPath.startsWith("~\\"))) {
     return path.resolve(os.homedir(), requestedPath.slice(2));
   }
   return path.isAbsolute(requestedPath) ? path.normalize(requestedPath) : path.resolve(os.homedir(), requestedPath);
@@ -259,41 +259,6 @@ function collectSystemStatus() {
     },
     cpus: os.cpus().map((cpu) => cpu.model)
   };
-}
-
-function runCommand(commandSpec) {
-  return new Promise((resolve) => {
-    const child = spawn(commandSpec.cmd, commandSpec.args, {
-      cwd: os.homedir(),
-      env: {
-        PATH: process.env.PATH || "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        HOME: os.homedir(),
-        LANG: process.env.LANG || "C.UTF-8"
-      },
-      shell: false,
-      windowsHide: true
-    });
-
-    let stdout = "";
-    let stderr = "";
-
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString("utf8");
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString("utf8");
-    });
-    child.on("error", (error) => {
-      resolve({ exitCode: null, stdout, stderr: `${stderr}\n${error.message}`.trim() });
-    });
-    child.on("close", (code, signal) => {
-      resolve({ exitCode: code, signal, stdout, stderr });
-    });
-  });
-}
-
-function runShell(command) {
-  return runCommand({ cmd: "/bin/bash", args: ["-lc", command] });
 }
 
 function buildMcpServer(req) {
@@ -382,9 +347,11 @@ server.registerTool(
   "shell",
   {
     title: "Shell",
-    description: "Run an unrestricted Bash command on this server. This is OAuth-protected and intentionally dangerous.",
+    description: `Run an unrestricted ${process.platform === "win32" ? "PowerShell" : "Bash"} command on this server. This is OAuth-protected and intentionally dangerous.`,
     inputSchema: {
-      command: z.string().min(1).describe("Bash command to run with /bin/bash -lc.")
+      command: z.string().min(1).describe(process.platform === "win32"
+        ? "PowerShell command to run with Windows PowerShell (powershell.exe), without a profile or interactive input."
+        : "Bash command to run with /bin/bash -lc.")
     },
     annotations: {
       readOnlyHint: false,
@@ -656,8 +623,8 @@ app.all(["/mcp", `${PREFIX}/mcp`], async (req, res) => {
   }
 });
 
-app.listen(PORT, HOST, () => {
-  console.log(`Hostgate listening at http://${HOST}:${PORT}/mcp`);
+const listener = app.listen(PORT, HOST, () => {
+  console.log(`Hostgate listening at http://${HOST}:${listener.address().port}/mcp`);
   console.log("OAuth: enabled");
   console.log(`OAuth state: ${STATE_PATH}`);
 });

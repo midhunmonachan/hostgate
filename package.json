@@ -17,7 +17,8 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "check": "node --check src/server.js && node --check bin/hostgate.js"
+    "check": "node --check src/server.js && node --check src/shell.js && node --check bin/hostgate.js && node --check test/shell.test.js && node --check test/integration.test.js",
+    "test": "node --test test/shell.test.js test/integration.test.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.21.0",

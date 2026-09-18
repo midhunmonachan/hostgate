@@ -2,3 +2,12 @@ node_modules/
 .env*
 !.env.example
 npm-debug.log*
+
+# Credentials, OAuth persistence, logs, and generated local test/work files.
+oauth-state.json
+.config/hostgate/
+.local/share/hostgate/
+.hostgate-local/
+*.log
+*.tgz
+coverage/
