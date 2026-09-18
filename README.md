@@ -48,6 +48,33 @@ node bin/hostgate.js logs -f
 
 During onboarding, choose a Hostgate username and a strong password. Keep both private.
 
+## Check my setup
+
+From the checkout, run this in a second terminal on Windows or Linux:
+
+```text
+node bin/hostgate.js doctor
+```
+
+It reports **OK**, **NEEDS ATTENTION**, or **NOT VERIFIED**, with a next step for each issue. It checks Node.js, required package entry points, npm on PATH, the command shell, saved restart credentials, local health, and an existing matching Tailscale Funnel route. It never installs anything or applies fixes.
+
+**Running is not the same as restart-ready.** A healthy server can still lack saved configuration. Do not stop a working server or replace its credentials just because this check finds missing restart settings. On Windows, keep the foreground terminal open; this CLI does not manage Windows services or autostart. On Linux, doctor also checks whether the user service is active, without changing it.
+
+For another existing HTTPS deployment, supply its connection URL explicitly:
+
+```text
+node bin/hostgate.js doctor --url https://your-host/hostgate/mcp
+node bin/hostgate.js doctor --json
+```
+
+The HTTPS check uses unauthenticated GET requests for health, OAuth discovery, and the MCP authentication challenge. It rejects redirects, credential-bearing URLs, and invalid certificates. Automatic discovery only recognizes a single public Funnel `/hostgate` mapping to the configured local backend; other arrangements need `--url`. Tailscale is optional. The public URL is contacted only when supplied explicitly or found in that existing mapping. It is never guessed from a hostname alone.
+
+Doctor does not read OAuth state or another process's environment, create credentials, perform sign-in, issue tokens, call MCP tools, change tunneling, or start/stop Hostgate. Findings describe this terminal's configuration and connectivity, not proof of access from ChatGPT, credential validity, reboot recovery, or a completed security audit. Use the connection steps below and a read-only `status` request for the first authenticated test.
+
+Diagnostics have a three-second timeout and a 64 KiB output/response limit per probe. These bounds apply **only to doctor**, not to authorized file or shell tools. Dependency checks establish entry-point availability, not version or integrity verification. JSON output includes a schema version and the same redacted findings; it may include your public connection URL, so review it before sharing.
+
+Exit codes: **0** means no actionable problem was detected by the checks performed (some checks can remain unverified); **1** means a finding needs attention or a check failed; **2** means invalid arguments. Doctor requires Node.js to launch, but it can diagnose missing npm and missing Hostgate dependencies. It uses the same saved-configuration selection, raw values, and environment precedence as `start`, without modifying that startup behavior.
+
 ## Connect
 
 ChatGPT connects to the server over HTTPS. Tailscale Funnel is one way to expose Hostgate:
@@ -114,6 +141,10 @@ Tailscale Funnel makes the endpoint reachable from the public internet. Read the
 ### ChatGPT does not show any actions
 
 Confirm that Hostgate is running, the `/hostgate/mcp` URL is reachable over HTTPS, OAuth is selected, and the account is connected. Then refresh the app details.
+
+### Check my setup without changing anything
+
+Run `node bin/hostgate.js doctor`. See [Check my setup](#check-my-setup) for options and what each result means.
 
 ### Check whether Hostgate is running
 

@@ -25,6 +25,7 @@ function usage() {
 Usage:
   hostgate onboard      Configure; install/start a user service on Linux only
   hostgate start        Run in the foreground with saved configuration
+  hostgate doctor [--json] [--url HTTPS_URL]  Check setup without changing it
   hostgate status       Linux: service status; Windows: HTTP health check
   hostgate logs [-f]     Linux: journal logs; Windows: use foreground output
   hostgate help         Show this help
@@ -401,6 +402,26 @@ try {
     case "start":
       await startForeground();
       break;
+    case "doctor": {
+      const { collectDoctor, formatDoctor, parseDoctorArgs } = await import("../src/doctor.js");
+      let options;
+      try { options = parseDoctorArgs(args); }
+      catch (error) {
+        console.error(error.message);
+        process.exitCode = 2;
+        break;
+      }
+      const report = await collectDoctor({
+        projectRoot, ...options,
+        readConfig: () => ({
+          source: existsSync(envPath) ? "user" : existsSync(legacyEnvPath) ? "legacy" : "missing",
+          values: Object.fromEntries(defaultEnvValues())
+        })
+      });
+      console.log(options.json ? JSON.stringify(report, null, 2) : formatDoctor(report));
+      process.exitCode = report.exitCode;
+      break;
+    }
     case "status":
       await status();
       break;
