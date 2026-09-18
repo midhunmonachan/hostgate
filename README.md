@@ -146,9 +146,45 @@ S256 is required. Its challenge must be 43 base64url characters; the verifier mu
 
 **Upgrade compatibility:** no state-file migration, credential rotation, client-ID replacement, or automatic token revocation occurs. Existing valid registrations and unexpired bearer tokens remain usable, including tokens loaded from the existing version-1 state format. Malformed legacy registrations are retained on disk but cannot obtain new authorization codes. Already-issued tokens are not retroactively revoked. If a connection has missing or invalid callback metadata, register a new OAuth client using the app connection setup and the exact callback shown for that connection. Recreating the affected MCP connection may be necessary because clients can reuse their original registration. Do not delete OAuth state or replace Hostgate credentials to repair callback metadata.
 
-A normal server restart is required to load updated validation code; editing the checkout does not update an already-running process. Before restarting an environment-only deployment, preserve its original launcher configuration. This validation slice does not add brute-force protection, request-size limits, browser-bound approval transactions, token revocation, resource/audience binding, or stronger proof of ChatGPT client identity; those remain separate perimeter-security work.
+A normal server restart is required to load updated validation code; editing the checkout does not update an already-running process. Before restarting an environment-only deployment, preserve its original launcher configuration. Browser-bound approval transactions, token revocation, resource/audience binding, and stronger proof of ChatGPT client identity remain separate perimeter-security work. Public-request protections and their compatibility effects are described below.
 
 Implementation references: [OpenAI authentication and callback requirements](https://developers.openai.com/plugins/build/auth), [RFC 7591 registration](https://www.rfc-editor.org/rfc/rfc7591.html), [RFC 9700 exact redirect matching](https://www.rfc-editor.org/rfc/rfc9700.html#section-2.1), and [RFC 7636 PKCE](https://www.rfc-editor.org/rfc/rfc7636.html). OpenAI guidance was checked on September 18, 2026. Hostgate continues to advertise DCR, not Client ID Metadata Documents; this update does not change issuer discovery or add `iss` support.
+
+### If sign-in asks you to wait
+
+Hostgate now slows repeated public OAuth requests. HTTP **429** means wait for the number of seconds in the `Retry-After` response header, then retry; it does not necessarily mean your password is wrong. Do not repeatedly click Authorize or retry in a tight loop. If the authorization code expired, restart the connection's sign-in flow rather than reusing that code. Existing authenticated MCP connections are not subject to these OAuth rate limits.
+
+HTTP **503** can mean too many unfinished OAuth uploads or that new-registration/issuance capacity is full. A temporary upload overload includes `Retry-After: 1`; issuance capacity suggests retrying after 60 seconds, although a grant may not expire that soon. A registration-capacity response needs the host owner's review, not password rotation or repeated registration. Do not delete OAuth state, replace working credentials, or restart a healthy server merely to clear an admission error.
+
+<details>
+<summary>Public endpoint limits, deployment notes, and compatibility</summary>
+
+Limits are per running server process, shared across root and `/hostgate` route aliases, regardless of supplied usernames, client IDs, IP addresses, or forwarded headers. Fixed-size token buckets refill gradually rather than extending a ban every time a denied request arrives.
+
+| OAuth budget | Initial burst | Refill |
+| --- | --- | --- |
+| Registration requests | 30 | One request every 2 seconds |
+| Authorization GET/HEAD/POST requests (combined) | 120 | One request every 0.5 seconds |
+| Token endpoint requests | 60 | One request every second |
+| Failed password checks after valid client/callback validation | 5 | One failure allowance every 12 seconds |
+
+Successful password checks do not spend or reset the failed-password budget. When that budget is exhausted, even a correct login waits until an allowance refills. Valid and invalid endpoint requests both spend their endpoint's request budget. An attacker can temporarily delay legitimate new sign-ins by consuming shared allowances; these safeguards are not a denial-of-service guarantee. Counters are in memory and reset on a normal process restart. Multiple instances need separate deployment coordination; no distributed rate store is implemented.
+
+Public OAuth POST bodies accept JSON or URL-encoded parameters, up to **64 KiB**, with a **10-second total upload deadline** and at most **16 pending OAuth body readers**. Declared and chunked oversized bodies receive **413**; incomplete uploads receive **408**; unsupported media types or compressed bodies receive **415**. OAuth GET/HEAD requests must not carry bodies, and unsupported OAuth methods receive **405**. Slots are released on completion, rejection, timeout, or disconnection. Responses to rejected incomplete uploads close that HTTP connection after the response is flushed. Unknown routes return a small JSON **404** immediately rather than waiting for a body.
+
+MCP bearer authentication runs **before** request-body decoding. An unauthenticated or invalid-token MCP request receives **401** without waiting for the upload. Authenticated MCP requests retain the existing decoding and full authority: this change adds no body-size, output-size, duration, path, or command restrictions to MCP tools. Health and discovery remain public and are not assigned these OAuth endpoint budgets. Transport-level header/socket controls, reverse-proxy filtering, and volumetric attack protection remain separate deployment concerns; this patch does not change Node's transport defaults.
+
+New registrations stop at **256 stored clients** by default. An operator can explicitly set `HOSTGATE_OAUTH_MAX_CLIENTS` in the launcher's environment to an integer from 1 through 100000; invalid values stop startup without echoing the supplied value. Investigate unexpected registration growth before raising this ceiling. No automatic registration deletion or eviction occurs. Existing registrations above a new ceiling are loaded and remain usable if valid, but no additional registrations are admitted until capacity is available or deliberately increased. A future owner-authorized connection-management operation is still needed for convenient cleanup; do not hand-edit or delete state while the server runs.
+
+Issuance is bounded at **256 outstanding authorization codes** and **4096 active access-token records**. Expired entries are removed opportunistically before new issuance; expired tokens are also omitted from subsequent normal state saves. Existing unexpired tokens are not evicted, including legacy state above the ceiling. Startup does not migrate or rewrite the version-1 state file. Rate, body, and token-capacity admission failures occur before authorization-code consumption; normal parsed exchange failures still consume the code as documented above. Capacity reclamation changes only already-expired records, not scopes, token lifetimes, credentials, or grants that are still valid.
+
+OAuth responses include `Cache-Control: no-store` and `Pragma: no-cache`. New rejection messages are fixed strings: no request bodies, passwords, codes, tokens, or raw exceptions are logged or reflected by these guards. This is not an audit-log implementation; proxy access logs still need independent redaction and protection.
+
+These budgets intentionally do not derive identity from `X-Forwarded-For`: the existing proxy trust/issuer behavior is unchanged and still needs its own migration. Keep the backend behind the intended HTTPS proxy. A restart is required to activate these protections, using the original launcher environment; no service, tunnel, configuration, or credential change is performed by installing this code. Windows PowerShell and Linux Bash behavior, both route families, all scopes, and exactly four MCP tools are preserved.
+
+References: [OAuth credential-guessing defenses](https://www.rfc-editor.org/rfc/rfc6749.html#section-10.10), [HTTP 429 and Retry-After](https://www.rfc-editor.org/rfc/rfc6585.html#section-4), [Express proxy trust](https://expressjs.com/en/guide/behind-proxies.html), and [Node HTTP transport defaults](https://nodejs.org/api/http.html). Operator guidance checked September 18, 2026.
+
+</details>
 
 ## FAQ
 

@@ -1,5 +1,6 @@
 import express from "express";
 import { runShell } from "./shell.js";
+import { createBodyParser, createPerimeter, closeUnreadRequest, pruneExpired } from "./perimeter.js";
 import { isObject, validateRegistration, validateClientRedirect, validateAuthorization, validCodeVerifier } from "./oauth-validation.js";
 import crypto from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -30,6 +31,7 @@ const PREFIX = "/hostgate";
 const clients = new Map();
 const authorizationCodes = new Map();
 const accessTokens = new Map();
+const perimeter = createPerimeter();
 
 function randomToken(bytes = 32) {
   return crypto.randomBytes(bytes).toString("base64url");
@@ -64,6 +66,7 @@ function loadOAuthState() {
 }
 
 function saveOAuthState() {
+  pruneExpired(accessTokens);
   try {
     mkdirSync(path.dirname(STATE_PATH), { recursive: true, mode: 0o700 });
     const state = {
@@ -190,56 +193,11 @@ function requireAuth(req, res, next) {
     return;
   }
 
+  closeUnreadRequest(req, res);
   res
     .status(401)
     .set("WWW-Authenticate", `Bearer resource_metadata="${requestBaseUrl(req)}/.well-known/oauth-protected-resource"`)
     .json({ error: "authorization_required" });
-}
-
-function parseRequestBody(req, res, next) {
-  if (!["POST", "PUT", "PATCH"].includes(req.method)) {
-    req.body = {};
-    next();
-    return;
-  }
-
-  const chunks = [];
-  req.on("data", (chunk) => {
-    chunks.push(chunk);
-  });
-  req.on("error", next);
-  req.on("end", () => {
-    const bodyText = Buffer.concat(chunks).toString("utf8");
-    const contentType = req.get("content-type") || "";
-
-    if (!bodyText) {
-      req.body = {};
-      next();
-      return;
-    }
-
-    try {
-      if (contentType.includes("application/json")) {
-        req.body = JSON.parse(bodyText);
-      } else if (contentType.includes("application/x-www-form-urlencoded")) {
-        const form = new URLSearchParams(bodyText);
-        // Reject ambiguous OAuth scalar fields without changing MCP body semantics.
-        if (/^\/(?:hostgate\/)?oauth\/(?:register|authorize|token)\/?$/i.test(req.path) &&
-            ["response_type", "client_id", "redirect_uri", "code_challenge", "code_challenge_method",
-              "state", "scope", "username", "password", "grant_type", "code", "code_verifier"]
-              .some((key) => form.getAll(key).length > 1)) {
-          res.status(400).json({ error: "invalid_request" });
-          return;
-        }
-        req.body = Object.fromEntries(form);
-      } else {
-        req.body = {};
-      }
-      next();
-    } catch {
-      res.status(400).json({ error: "invalid_request_body" });
-    }
-  });
 }
 
 function resolveHostPath(requestedPath) {
@@ -396,7 +354,9 @@ return server;
 
 const app = express();
 app.set("trust proxy", true);
-app.use(parseRequestBody);
+// Authenticate before reading any MCP body. Only public OAuth uploads are bounded.
+app.use(["/mcp", `${PREFIX}/mcp`], requireAuth, createBodyParser());
+app.use(["/oauth", `${PREFIX}/oauth`], perimeter.middleware);
 app.get(["/health", `${PREFIX}/health`], (_req, res) => {
   res.json({ ok: true, name: "hostgate" });
 });
@@ -425,6 +385,7 @@ app.post(["/oauth/register", `${PREFIX}/oauth/register`], (req, res) => {
     res.status(400).json({ error });
     return;
   }
+  if (!perimeter.allowClient(req, res, clients)) return;
   const clientId = randomToken(18);
   const client = {
     clientId,
@@ -557,12 +518,15 @@ app.post(["/oauth/authorize", `${PREFIX}/oauth/authorize`], (req, res) => {
     return;
   }
 
+  if (!perimeter.allowPassword(req, res)) return;
   if (!OAUTH_PASSWORD || typeof req.body.username !== "string" || typeof req.body.password !== "string" ||
       req.body.username !== OAUTH_USERNAME || !timingSafeEqualString(req.body.password, OAUTH_PASSWORD)) {
+    perimeter.failedPassword();
     res.status(401).type("html").send(renderLoginForm(params, requestBasePath(req), "Invalid username or password."));
     return;
   }
 
+  if (!perimeter.allowExpiring(req, res, authorizationCodes, "code")) return;
   const code = randomToken(24);
   authorizationCodes.set(code, {
     clientId: params.client_id,
@@ -590,6 +554,8 @@ app.post(["/oauth/token", `${PREFIX}/oauth/token`], (req, res) => {
     return;
   }
 
+  // Capacity/rate admission happens before consuming a one-use authorization code.
+  if (!perimeter.allowExpiring(req, res, accessTokens, "token")) return;
   const record = authorizationCodes.get(req.body.code);
   authorizationCodes.delete(req.body.code);
   if (!record || record.expiresAt < Date.now()) {
@@ -629,7 +595,6 @@ app.post(["/oauth/token", `${PREFIX}/oauth/token`], (req, res) => {
   });
 });
 
-app.use(["/mcp", `${PREFIX}/mcp`], requireAuth);
 
 app.all(["/mcp", `${PREFIX}/mcp`], async (req, res) => {
   if (req.method === "GET" || req.method === "DELETE") {
@@ -662,6 +627,13 @@ app.all(["/mcp", `${PREFIX}/mcp`], async (req, res) => {
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }
   }
+});
+
+// Express's default final handler drains unknown request bodies before its 404.
+// Reject them immediately so unrecognized paths cannot hold an upload open.
+app.use((req, res) => {
+  closeUnreadRequest(req, res);
+  res.status(404).json({ error: "not_found" });
 });
 
 const listener = app.listen(PORT, HOST, () => {
