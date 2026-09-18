@@ -1,5 +1,6 @@
 import express from "express";
-import { loadHostRuntime, runHostTool, profileFilePath, resolveExecutionDirectory, withHostLease } from "./host-runtime.js";
+import { runTool, resolveFilePath } from "./execution.js";
+import { assertSingleInstanceEnvironment, configuredResource, validResource, tokenResourceMatches, validateStateBinding } from "./endpoint-binding.js";
 import { runShell } from "./shell.js";
 import { createBodyParser, createPerimeter, closeUnreadRequest, pruneExpired } from "./perimeter.js";
 import { isObject, validateRegistration, validateClientRedirect, validateAuthorization, validCodeVerifier } from "./oauth-validation.js";
@@ -13,11 +14,13 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 
-const runtime = await loadHostRuntime();
-const PORT = Number((runtime?.values.PORT ?? process.env.PORT) || 8787);
-const HOST = (runtime?.values.HOST ?? process.env.HOST) || "127.0.0.1";
-const OAUTH_USERNAME = (runtime?.values.HOSTGATE_OAUTH_USERNAME ?? process.env.HOSTGATE_OAUTH_USERNAME) || "admin";
-const OAUTH_PASSWORD = (runtime?.values.HOSTGATE_OAUTH_PASSWORD ?? process.env.HOSTGATE_OAUTH_PASSWORD) || "";
+assertSingleInstanceEnvironment(process.env);
+const PUBLIC_URL = configuredResource(process.env.HOSTGATE_PUBLIC_URL);
+const instanceId = crypto.randomUUID();
+const PORT = Number(process.env.PORT || 8787);
+const HOST = process.env.HOST || "127.0.0.1";
+const OAUTH_USERNAME = process.env.HOSTGATE_OAUTH_USERNAME || "admin";
+const OAUTH_PASSWORD = process.env.HOSTGATE_OAUTH_PASSWORD || "";
 const ALL_SCOPE = "all";
 const TOOL_SCOPES = {
   status: "status",
@@ -27,7 +30,7 @@ const TOOL_SCOPES = {
 };
 const SUPPORTED_SCOPES = [ALL_SCOPE, ...Object.values(TOOL_SCOPES)];
 const TOKEN_TTL_SECONDS = 86_400;
-const STATE_PATH = runtime?.paths.oauth || path.join(os.homedir(), ".local/share/hostgate/oauth-state.json");
+const STATE_PATH = path.join(os.homedir(), ".local/share/hostgate/oauth-state.json");
 const PREFIX = "/hostgate";
 
 const clients = new Map();
@@ -46,7 +49,7 @@ function tokenHash(token) {
 function loadOAuthState() {
   try {
     const state = JSON.parse(readFileSync(STATE_PATH, "utf8"));
-    if (runtime && (state.version !== 2 || state.hostId !== runtime.identity.hostId || state.resource !== runtime.identity.endpoint)) throw new Error("Wrong host state binding.");
+    validateStateBinding(state, PUBLIC_URL);
     for (const client of state.clients || []) {
       if (client?.clientId) {
         clients.set(client.clientId, client);
@@ -58,14 +61,13 @@ function loadOAuthState() {
           clientId: token.clientId,
           scope: token.scope,
           expiresAt: token.expiresAt,
-          ...(runtime ? { hostId: token.hostId, resource: token.resource } : {})
+          ...(token.resource !== undefined ? { resource: token.resource } : {})
         });
       }
     }
   } catch (error) {
     if (error.code !== "ENOENT") {
-      if (runtime) throw new Error("Profile OAuth state is corrupt or belongs to another host; it was not replaced.");
-      console.warn(`Failed to load OAuth state from ${STATE_PATH}: ${error.message}`);
+      throw new Error("OAuth state is unreadable or has an incompatible endpoint/profile binding. It was not replaced.");
     }
   }
 }
@@ -75,15 +77,15 @@ function saveOAuthState() {
   try {
     mkdirSync(path.dirname(STATE_PATH), { recursive: true, mode: 0o700 });
     const state = {
-      version: runtime ? 2 : 1,
-      ...(runtime ? { hostId: runtime.identity.hostId, resource: runtime.identity.endpoint } : {}),
+      version: PUBLIC_URL ? 3 : 1,
+      ...(PUBLIC_URL ? { resource: PUBLIC_URL } : {}),
       clients: Array.from(clients.values()),
       accessTokens: Array.from(accessTokens.entries()).map(([hash, token]) => ({
         hash,
         clientId: token.clientId,
         scope: token.scope,
         expiresAt: token.expiresAt,
-        ...(runtime ? { hostId: token.hostId, resource: token.resource } : {})
+        ...(token.resource !== undefined ? { resource: token.resource } : {})
       }))
     };
     writeFileSync(STATE_PATH, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
@@ -105,7 +107,7 @@ function requestBasePath(req) {
 }
 
 function requestBaseUrl(req) {
-  if (runtime) return runtime.identity.endpoint.slice(0, -4);
+  if (PUBLIC_URL) return PUBLIC_URL.slice(0, -4);
   return `${req.protocol}://${req.get("host")}${requestBasePath(req)}`;
 }
 
@@ -174,7 +176,7 @@ function verifyBearerToken(req) {
 
   const token = header.slice("Bearer ".length);
   const record = accessTokens.get(tokenHash(token));
-  if (!record || runtime && (record.hostId !== runtime.identity.hostId || record.resource !== runtime.identity.endpoint)) {
+  if (!tokenResourceMatches(record, `${requestBaseUrl(req)}/mcp`, !!PUBLIC_URL)) {
     return false;
   }
   if (record.expiresAt < Date.now()) {
@@ -226,16 +228,16 @@ function collectSystemStatus() {
 }
 
 function buildMcpServer(req) {
-const targetSchema = z.object({ hostId: z.string().uuid(), hostName: z.string().min(1).max(64), endpoint: z.string().url() }).strict();
-const routeSchema = { target: runtime ? targetSchema : targetSchema.optional(), contextId: runtime ? z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/) : z.string().optional() };
 const registerTool = (name, config, handler) => server.registerTool(name, {
   ...config,
-  description: config.description + (runtime ? ' ONLY host ' + runtime.identity.hostName + ' [' + runtime.identity.hostId + '] at ' + runtime.identity.endpoint + '. Supply the target from the user routing card, never infer a different target to make a call succeed.' : ''),
-  inputSchema: { ...config.inputSchema, ...routeSchema }
-}, (args, extra) => runHostTool(runtime, req, name, args, extra, handler));
+  // Strict schemas reject cached/obsolete fields instead of silently dropping them.
+  inputSchema: z.object({ ...config.inputSchema,
+    contextId: z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/).optional()
+      .describe("Optional project/chat correlation label, not a host selector or permission.")
+  }).strict()
+}, (args, extra) => runTool(instanceId, req, name, args, extra, handler));
 const server = new McpServer({
-  name: runtime ? `hostgate-${runtime.identity.hostId}` : "hostgate",
-  ...(runtime ? { title: `Hostgate - ${runtime.identity.hostName}` } : {}),
+  name: "hostgate",
   version: "0.1.0"
 });
 
@@ -267,8 +269,8 @@ registerTool(
     title: "Read text file",
     description: "Use this to read a UTF-8 text file by absolute path or by path relative to the service user's home directory.",
     inputSchema: {
-      cwd: z.string().min(1).optional().describe("Explicit per-call base directory for relative paths on a named host; never changes another call."),
-      path: z.string().min(1).describe("Absolute path, or a relative path resolved against this call's cwd (legacy default: user home).")
+      cwd: z.string().min(1).optional().describe("Explicit base directory for this call only. Defaults to the service user home; any OS-accessible directory is allowed."),
+      path: z.string().min(1).describe("Absolute path, ~/ path, or a path relative to this call's cwd (default: user home).")
     },
     annotations: {
       readOnlyHint: true,
@@ -278,7 +280,7 @@ registerTool(
   },
   async ({ path: requestedPath, cwd }) => {
     requireScope(req, TOOL_SCOPES.read);
-    const resolved = profileFilePath(runtime, requestedPath, cwd);
+    const resolved = resolveFilePath(requestedPath, cwd);
     const file = await readFile(resolved);
 
     const text = file.toString("utf8");
@@ -295,8 +297,8 @@ registerTool(
     title: "Write text file",
     description: "Use this to write a UTF-8 text file by absolute path or by path relative to the service user's home directory. This overwrites the file.",
     inputSchema: {
-      cwd: z.string().min(1).optional().describe("Explicit per-call base directory for relative paths on a named host; never changes another call."),
-      path: z.string().min(1).describe("Absolute path, or a relative path resolved against this call's cwd (legacy default: user home)."),
+      cwd: z.string().min(1).optional().describe("Explicit base directory for this call only. Defaults to the service user home; any OS-accessible directory is allowed."),
+      path: z.string().min(1).describe("Absolute path, ~/ path, or a path relative to this call's cwd (default: user home)."),
       content: z.string().describe("UTF-8 text content to write.")
     },
     annotations: {
@@ -307,7 +309,7 @@ registerTool(
   },
   async ({ path: requestedPath, content, cwd }) => {
     requireScope(req, TOOL_SCOPES.write);
-    const resolved = profileFilePath(runtime, requestedPath, cwd);
+    const resolved = resolveFilePath(requestedPath, cwd);
     await mkdir(path.dirname(resolved), { recursive: true });
     await writeFile(resolved, content, "utf8");
     return {
@@ -326,7 +328,7 @@ registerTool(
       command: z.string().min(1).describe(process.platform === "win32"
         ? "PowerShell command to run with Windows PowerShell (powershell.exe), without a profile or interactive input."
         : "Bash command to run with /bin/bash -lc."),
-      cwd: runtime ? z.string().min(1).describe("Explicit working directory for this call only; any OS-accessible directory is allowed.") : z.string().min(1).optional()
+      cwd: z.string().min(1).optional().describe("Explicit working directory for this call only. Use an absolute or ~/ path; omitted means user home.")
     },
     annotations: {
       readOnlyHint: false,
@@ -336,7 +338,7 @@ registerTool(
   },
   async ({ command, cwd }) => {
     requireScope(req, TOOL_SCOPES.shell);
-    const result = await runShell(command, cwd === undefined ? {} : { cwd: resolveExecutionDirectory(runtime, cwd) });
+    const result = await runShell(command, cwd === undefined ? {} : { cwd });
     const structuredContent = { ...result, command };
     const parts = [
       `$ ${command}`,
@@ -363,10 +365,6 @@ const app = express();
 app.use((req, res, next) => {
   req.hostgateRequestId = crypto.randomUUID();
   res.set("X-Hostgate-Request-Id", req.hostgateRequestId);
-  if (runtime) {
-    try { runtime.assertCurrent(); } catch { closeUnreadRequest(req, res); res.status(409).json({ error: "host_profile_changed" }); return; }
-    res.set("X-Hostgate-Host-Id", runtime.identity.hostId);
-  }
   next();
 });
 app.set("trust proxy", true);
@@ -374,7 +372,7 @@ app.set("trust proxy", true);
 app.use(["/mcp", `${PREFIX}/mcp`], requireAuth, createBodyParser());
 app.use(["/oauth", `${PREFIX}/oauth`], perimeter.middleware);
 app.get(["/health", `${PREFIX}/health`], (_req, res) => {
-  res.json({ ok: true, name: "hostgate", ...(runtime ? { host: runtime.identity, instanceId: runtime.instanceId } : {}) });
+  res.json({ ok: true, name: "hostgate", ...(PUBLIC_URL ? { resource: PUBLIC_URL } : {}) });
 });
 
 app.get([
@@ -469,7 +467,6 @@ function renderLoginForm(params, basePath, error = "") {
 <body>
   <main>
     <h1>Authorize Hostgate</h1>
-    ${runtime ? `<p>Host: <strong>${htmlEscape(runtime.identity.hostName)}</strong><br>ID: ${htmlEscape(runtime.identity.hostId)}<br>Endpoint: ${htmlEscape(runtime.identity.endpoint)}</p>` : ""}
     <p>This grants the requesting application access to the OAuth-protected MCP tools on this server.</p>
     <p>Application (self-reported): <strong>${htmlEscape(clientName)}</strong><br>Callback: <code>${htmlEscape(params.redirect_uri)}</code></p>
     <p>The application name is not proof of identity. Continue only for the connection you started.</p>
@@ -485,8 +482,8 @@ function renderLoginForm(params, basePath, error = "") {
 </html>`;
 }
 
-function validateAuthorizeParams(params) {
-  if (runtime && params.resource !== runtime.identity.endpoint) return "OAuth resource must match this named host endpoint.";
+function validateAuthorizeParams(params, expectedResource) {
+  if (!validResource(params.resource, expectedResource, !!PUBLIC_URL)) return "OAuth resource must match this endpoint.";
   const error = validateAuthorization(params, clients.get(params.client_id));
   if (error) return error;
   try {
@@ -506,9 +503,9 @@ app.get(["/oauth/authorize", `${PREFIX}/oauth/authorize`], (req, res) => {
     code_challenge_method: req.query.code_challenge_method,
     state: req.query.state,
     scope: req.query.scope,
-    ...(runtime ? { resource: req.query.resource } : {})
+    ...(req.query.resource !== undefined ? { resource: req.query.resource } : {})
   };
-  const error = validateAuthorizeParams(params);
+  const error = validateAuthorizeParams(params, `${requestBaseUrl(req)}/mcp`);
   if (error) {
     rejectAuthorization(res, error);
     return;
@@ -529,10 +526,10 @@ app.post(["/oauth/authorize", `${PREFIX}/oauth/authorize`], (req, res) => {
     code_challenge_method: req.body.code_challenge_method,
     state: req.body.state,
     scope: req.body.scope,
-    ...(runtime ? { resource: req.body.resource } : {})
+    ...(req.body.resource !== undefined ? { resource: req.body.resource } : {})
   };
 
-  const error = validateAuthorizeParams(params);
+  const error = validateAuthorizeParams(params, `${requestBaseUrl(req)}/mcp`);
   if (error) {
     rejectAuthorization(res, error);
     return;
@@ -553,7 +550,7 @@ app.post(["/oauth/authorize", `${PREFIX}/oauth/authorize`], (req, res) => {
     redirectUri: params.redirect_uri,
     codeChallenge: params.code_challenge,
     scope: Array.from(normalizeRequestedScopes(params.scope)).join(" "),
-    ...(runtime ? { hostId: runtime.identity.hostId, resource: runtime.identity.endpoint } : {}),
+    ...(params.resource !== undefined ? { resource: params.resource } : {}),
     expiresAt: Date.now() + 5 * 60 * 1000
   });
 
@@ -575,14 +572,20 @@ app.post(["/oauth/token", `${PREFIX}/oauth/token`], (req, res) => {
     return;
   }
 
-  if (runtime && req.body.resource !== runtime.identity.endpoint) { res.status(400).json({ error: "invalid_target" }); return; }
+  const expectedResource = `${requestBaseUrl(req)}/mcp`;
+  if (!validResource(req.body.resource, expectedResource, !!PUBLIC_URL)) {
+    res.status(400).json({ error: "invalid_target" }); return;
+  }
   // Capacity/rate admission happens before consuming a one-use authorization code.
   if (!perimeter.allowExpiring(req, res, accessTokens, "token")) return;
   const record = authorizationCodes.get(req.body.code);
   authorizationCodes.delete(req.body.code);
-  if (!record || record.expiresAt < Date.now() || runtime && (record.hostId !== runtime.identity.hostId || record.resource !== runtime.identity.endpoint)) {
+  if (!record || record.expiresAt < Date.now()) {
     res.status(400).json({ error: "invalid_grant" });
     return;
+  }
+  if (record.resource !== undefined && record.resource !== req.body.resource) {
+    res.status(400).json({ error: "invalid_target" }); return;
   }
   if (record.clientId !== req.body.client_id || record.redirectUri !== req.body.redirect_uri ||
       validateClientRedirect(req.body.client_id, req.body.redirect_uri, clients.get(req.body.client_id))) {
@@ -605,7 +608,7 @@ app.post(["/oauth/token", `${PREFIX}/oauth/token`], (req, res) => {
   accessTokens.set(tokenHash(accessToken), {
     clientId: record.clientId,
     scope: record.scope,
-    ...(runtime ? { hostId: runtime.identity.hostId, resource: runtime.identity.endpoint } : {}),
+    ...(record.resource !== undefined || req.body.resource !== undefined ? { resource: record.resource ?? req.body.resource } : {}),
     expiresAt: Date.now() + TOKEN_TTL_SECONDS * 1000
   });
   saveOAuthState();
@@ -659,12 +662,8 @@ app.use((req, res) => {
   res.status(404).json({ error: "not_found" });
 });
 
-await withHostLease(runtime, () => {
 const listener = app.listen(PORT, HOST, () => {
   console.log(`Hostgate listening at http://${HOST}:${listener.address().port}/mcp`);
   console.log("OAuth: enabled");
   console.log(`OAuth state: ${STATE_PATH}`);
-});
-
-return listener;
 });

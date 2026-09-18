@@ -61,7 +61,7 @@ export function safeReleaseTree(repo, commit, gitPath = "git") {
     throw new Error("Candidate tracks sensitive or generated paths; refusing to deploy.");
   }
 }
-export async function prepareRelease({ repoRoot, commit, directory, nodePath = process.execPath, npmCli, gitPath = "git", profileId = null }, io = {}) {
+export async function prepareRelease({ repoRoot, commit, directory, nodePath = process.execPath, npmCli, gitPath = "git" }, io = {}) {
   if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error("An exact commit is required.");
   if (!npmCli || !fs.existsSync(npmCli)) throw new Error("npm is unavailable. Install npm or provide its npm-cli.js; the active server and dependencies are unchanged.");
   safeReleaseTree(repoRoot, commit, gitPath);
@@ -71,7 +71,6 @@ export async function prepareRelease({ repoRoot, commit, directory, nodePath = p
   await run(gitPath, ["-C", releasePath, "-c", "core.hooksPath=", "checkout", "--detach", commit], { timeout: 60000 });
   const manifest = JSON.parse(fs.readFileSync(path.join(releasePath, "package.json"), "utf8"));
   if (manifest.name !== "hostgate" || manifest.hostgateManagerApi !== 1 || !manifest.scripts?.check || !manifest.scripts?.test) throw new Error("Candidate does not declare compatible manager API and checks/tests. Release retained without activation.");
-  if (profileId && manifest.hostgateHostProfilesApi !== 1) throw new Error("Candidate does not preserve named-host routing; no profile activation is permitted.");
   const buildHome = path.join(directory, "builds", crypto.randomUUID());
   fs.mkdirSync(buildHome, { recursive: true, mode: 0o700 });
   const env = { ...shellEnvironment(), HOME: buildHome, USERPROFILE: buildHome, npm_config_cache: path.join(buildHome, "npm-cache"),
@@ -90,6 +89,7 @@ export async function performUpdate(job, io = {}) {
   const configPath = path.join(directory, "deployment.json");
   const before = readJson(configPath);
   if (!before) throw new Error("Install Windows managed startup before applying updates.");
+  if (before.profileId) throw new Error("Retired profile deployment requires explicit migration; no update was prepared.");
   const inspect = io.check || checkUpdate;
   const info = await inspect(before.repoRoot, before, before.gitPath);
   if (!info.cleanWorkingTree) throw new Error("Source working tree is not clean, including untracked files. Nothing was stashed, deleted, reset, or deployed.");
@@ -100,7 +100,7 @@ export async function performUpdate(job, io = {}) {
   if (git(before.repoRoot, ["rev-parse", "refs/remotes/origin/main"], before.gitPath) !== job.expected) throw new Error("Remote moved during fetch; explicit confirmation must be renewed.");
   git(before.repoRoot, ["merge-base", "--is-ancestor", before.current.commit, job.expected], before.gitPath);
   git(before.repoRoot, ["merge-base", "--is-ancestor", info.checkoutCommit, job.expected], before.gitPath);
-  const release = await (io.prepare || prepareRelease)({ repoRoot: before.repoRoot, commit: job.expected, directory, profileId: before.profileId,
+  const release = await (io.prepare || prepareRelease)({ repoRoot: before.repoRoot, commit: job.expected, directory,
     nodePath: before.nodePath, npmCli: before.npmCli || findNpm(before.nodePath, directory), gitPath: before.gitPath });
   if (!cleanCheckout(before.repoRoot, before.gitPath) || git(before.repoRoot, ["rev-parse", "HEAD"], before.gitPath) !== info.checkoutCommit ||
       readJson(configPath).current.commit !== before.current.commit) throw new Error("Source or deployment changed during preparation; candidate retained but not activated.");
@@ -112,6 +112,7 @@ export async function updateCli(args, repoRoot) {
   const [operation = "check", ...flags] = args;
   const directory = managedHome();
   const config = readJson(path.join(directory, "deployment.json"));
+  if (config?.profileId) throw new Error("Retired profile deployment requires explicit migration; no update was queued.");
   if (operation === "check") {
     if (flags.length) throw new Error("Usage: hostgate update check");
     console.log(JSON.stringify(await checkUpdate(config?.repoRoot || repoRoot, config, config?.gitPath || "git"), null, 2));

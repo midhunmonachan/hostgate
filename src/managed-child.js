@@ -7,7 +7,7 @@ if (!process.send || !process.argv[2]) throw new Error("Launch this entry point 
 let listener;
 const originalListen = net.Server.prototype.listen;
 net.Server.prototype.listen = function (...args) {
-  // A profile takes a named-pipe lease before its TCP HTTP listener.
+  // Track only the TCP HTTP listener, never an unrelated IPC pipe.
   if (typeof args[0] !== "number" && !(args[0] && typeof args[0] === "object" && "port" in args[0])) return originalListen.apply(this, args);
   net.Server.prototype.listen = originalListen;
   listener = this;

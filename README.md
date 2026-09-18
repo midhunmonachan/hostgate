@@ -67,7 +67,7 @@ node bin/hostgate.js doctor --url https://your-host/hostgate/mcp
 node bin/hostgate.js doctor --json
 ```
 
-The HTTPS check uses unauthenticated GET requests for health, OAuth discovery, and the MCP authentication challenge. It rejects redirects, credential-bearing URLs, and invalid certificates. Automatic discovery only recognizes a single public Funnel `/hostgate` mapping to the configured local backend; other arrangements need `--url`. Tailscale is optional. The public URL is contacted only when supplied explicitly or found in that existing mapping. It is never guessed from a hostname alone.
+The HTTPS check uses unauthenticated GET requests for health, OAuth discovery, and the MCP authentication challenge. It rejects redirects, credential-bearing URLs, and invalid certificates. Automatic discovery only recognizes a single public Funnel `/hostgate` mapping to the configured local backend; other arrangements need `--url`. Tailscale is optional. The public URL is contacted only when supplied through --url, saved HOSTGATE_PUBLIC_URL, or found in that existing mapping. It is never guessed from a hostname alone.
 
 Doctor does not read OAuth state or another process's environment, create credentials, perform sign-in, issue tokens, call MCP tools, change tunneling, or start/stop Hostgate. Findings describe this terminal's configuration and connectivity, not proof of access from ChatGPT, credential validity, reboot recovery, or a completed security audit. Use the connection steps below and a read-only `status` request for the first authenticated test.
 
@@ -89,16 +89,9 @@ Use this MCP URL:
 https://<your-tailscale-hostname>/hostgate/mcp
 ```
 
-In ChatGPT on the web:
+Create one app/connection for this endpoint and use a distinct app name for each computer. Current official developer-mode guidance uses **Settings → Security and login → Developer mode**, followed by the **Plugins** page's plus button. Enter the app name and this server's MCP URL, complete its own OAuth sign-in, and review the four tools. Account/workspace policies and UI variants can differ; follow the [official connection guide](https://developers.openai.com/plugins/deploy/connect-chatgpt) for the interface shown.
 
-1. Open **Settings → Apps** and choose **Create**, or open [ChatGPT Plugins](https://chatgpt.com/plugins) if that is the interface shown for your account.
-2. Choose **Server URL** and enter your `/hostgate/mcp` URL.
-3. Choose **OAuth**.
-4. Scan the tools, then create the app.
-5. Open the app’s connection settings and choose **Connect another account**.
-6. Enter the Hostgate username and password from onboarding.
-7. Refresh the app details so the actions appear.
-8. Enable **Allow all actions** only if you accept full access for the Hostgate account.
+Select the intended connection in the chat. Keep shell/write warnings visible; an "allow actions" preference is not a bypass of platform safeguards. After a separately approved server deployment, refresh that connection's metadata and verify it in a new conversation. A source update alone does not restart a server.
 
 Start with safe prompts:
 
@@ -144,11 +137,21 @@ Dynamic client registration remains available. Callbacks must be absolute HTTPS 
 
 S256 is required. Its challenge must be 43 base64url characters; the verifier must be 43–128 unreserved ASCII characters. Malformed scalar parameters and repeated form-encoded OAuth scalar fields are rejected. A failed exchange for a parsed authorization code retains the existing single-use behavior; obtain a new code rather than retry that code. These are authentication checks, not limits on authorized filesystem or shell access. Both root and `/hostgate` routes, all existing scopes, the default full-access grant, and exactly four MCP tools remain unchanged.
 
-**Upgrade compatibility:** no state-file migration, credential rotation, client-ID replacement, or automatic token revocation occurs. Existing valid registrations and unexpired bearer tokens remain usable, including tokens loaded from the existing version-1 state format. Malformed legacy registrations are retained on disk but cannot obtain new authorization codes. Already-issued tokens are not retroactively revoked. If a connection has missing or invalid callback metadata, register a new OAuth client using the app connection setup and the exact callback shown for that connection. Recreating the affected MCP connection may be necessary because clients can reuse their original registration. Do not delete OAuth state or replace Hostgate credentials to repair callback metadata.
+**Compatibility without canonical endpoint configuration:** no startup state-file migration, credential rotation, client-ID replacement, or automatic token revocation occurs. Explicitly enabling endpoint binding has the behavior described below. Existing valid registrations and unexpired bearer tokens remain usable, including tokens loaded from the existing version-1 state format. Malformed legacy registrations are retained on disk but cannot obtain new authorization codes. Already-issued tokens are not retroactively revoked. If a connection has missing or invalid callback metadata, register a new OAuth client using the app connection setup and the exact callback shown for that connection. Recreating the affected MCP connection may be necessary because clients can reuse their original registration. Do not delete OAuth state or replace Hostgate credentials to repair callback metadata.
 
-A normal server restart is required to load updated validation code; editing the checkout does not update an already-running process. Before restarting an environment-only deployment, preserve its original launcher configuration. Browser-bound approval transactions, token revocation, resource/audience binding, and stronger proof of ChatGPT client identity remain separate perimeter-security work. Public-request protections and their compatibility effects are described below.
+A normal server restart is required to load updated validation code; editing the checkout does not update an already-running process. Before restarting an environment-only deployment, preserve its original launcher configuration. Browser-bound approval transactions, token revocation, and stronger proof of ChatGPT client identity remain separate perimeter-security work. Single-endpoint resource binding is described below. Public-request protections and their compatibility effects are described below.
 
 Implementation references: [OpenAI authentication and callback requirements](https://developers.openai.com/plugins/build/auth), [RFC 7591 registration](https://www.rfc-editor.org/rfc/rfc7591.html), [RFC 9700 exact redirect matching](https://www.rfc-editor.org/rfc/rfc9700.html#section-2.1), and [RFC 7636 PKCE](https://www.rfc-editor.org/rfc/rfc7636.html). OpenAI guidance was checked on September 18, 2026. Hostgate continues to advertise DCR, not Client ID Metadata Documents; this update does not change issuer discovery or add `iss` support.
+
+### Bind OAuth to this instance's public endpoint
+
+Set `HOSTGATE_PUBLIC_URL=https://your-computer.example/hostgate/mcp` in this instance's existing saved configuration or launcher environment **only as an explicit deployment change**. It must be an HTTPS MCP URL ending in `/hostgate/mcp` or `/mcp`, with no credentials, query or fragment. No default value is enabled by this cleanup. Onboarding preserves an already-saved value, and doctor recognizes it without modifying it.
+
+With this setting, discovery advertises that fixed canonical endpoint regardless of incoming Host/proxy headers. Authorization and token requests must include the matching OAuth `resource`; issued codes/tokens are bound to it. Root and `/hostgate` aliases represent the same configured resource. Unbound legacy tokens are rejected in this strict mode, so plan a fresh sign-in for existing connections; passwords and registrations are not automatically replaced. A mismatch is an OAuth perimeter error, not a shell restriction.
+
+Startup does not rewrite state. A subsequent normal OAuth save in strict mode uses version-3 endpoint-bound state. That state refuses startup if the endpoint changes or the setting is removed, preventing an accidental downgrade. Existing version-1 state is still supported without the setting; optional supplied resources are validated and bound, but unbound legacy tokens and header-derived discovery remain for compatibility. This compatibility mode is not full audience-enforcement. Corrupt or obsolete profile state fails closed rather than being replaced. Never move another computer's private state into this instance.
+
+Reference: [MCP resource indicators and token audience validation](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization).
 
 ### If sign-in asks you to wait
 
@@ -176,11 +179,11 @@ MCP bearer authentication runs **before** request-body decoding. An unauthentica
 
 New registrations stop at **256 stored clients** by default. An operator can explicitly set `HOSTGATE_OAUTH_MAX_CLIENTS` in the launcher's environment to an integer from 1 through 100000; invalid values stop startup without echoing the supplied value. Investigate unexpected registration growth before raising this ceiling. No automatic registration deletion or eviction occurs. Existing registrations above a new ceiling are loaded and remain usable if valid, but no additional registrations are admitted until capacity is available or deliberately increased. A future owner-authorized connection-management operation is still needed for convenient cleanup; do not hand-edit or delete state while the server runs.
 
-Issuance is bounded at **256 outstanding authorization codes** and **4096 active access-token records**. Expired entries are removed opportunistically before new issuance; expired tokens are also omitted from subsequent normal state saves. Existing unexpired tokens are not evicted, including legacy state above the ceiling. Startup does not migrate or rewrite the version-1 state file. Rate, body, and token-capacity admission failures occur before authorization-code consumption; normal parsed exchange failures still consume the code as documented above. Capacity reclamation changes only already-expired records, not scopes, token lifetimes, credentials, or grants that are still valid.
+Issuance is bounded at **256 outstanding authorization codes** and **4096 active access-token records**. Expired entries are removed opportunistically before new issuance; expired tokens are also omitted from subsequent normal state saves. Existing unexpired tokens are not evicted, including legacy state above the ceiling. Startup does not rewrite OAuth state; explicitly enabled canonical endpoint binding affects subsequent saves as documented above. Rate, body, and token-capacity admission failures occur before authorization-code consumption; normal parsed exchange failures still consume the code as documented above. Capacity reclamation changes only already-expired records, not scopes, token lifetimes, credentials, or grants that are still valid.
 
-OAuth responses include `Cache-Control: no-store` and `Pragma: no-cache`. New rejection messages are fixed strings: no request bodies, passwords, codes, tokens, or raw exceptions are logged or reflected by these guards. This is not an audit-log implementation; proxy access logs still need independent redaction and protection.
+OAuth responses include `Cache-Control: no-store` and `Pragma: no-cache`. New rejection messages are fixed strings: no request bodies, passwords, codes, tokens, or raw exceptions are logged or reflected by these guards. These OAuth guards do not audit every authentication event; execution completion logs are described below, and proxy access logs still need independent redaction and protection.
 
-These budgets intentionally do not derive identity from `X-Forwarded-For`: the existing proxy trust/issuer behavior is unchanged and still needs its own migration. Keep the backend behind the intended HTTPS proxy. A restart is required to activate these protections, using the original launcher environment; no service, tunnel, configuration, or credential change is performed by installing this code. Windows PowerShell and Linux Bash behavior, both route families, all scopes, and exactly four MCP tools are preserved.
+These budgets intentionally do not derive identity from `X-Forwarded-For`: proxy trust still needs deployment-specific review; canonical issuer binding requires the explicit public-URL setting above. Keep the backend behind the intended HTTPS proxy. A restart is required to activate these protections, using the original launcher environment; no service, tunnel, configuration, or credential change is performed by installing this code. Windows PowerShell and Linux Bash behavior, both route families, all scopes, and exactly four MCP tools are preserved.
 
 References: [OAuth credential-guessing defenses](https://www.rfc-editor.org/rfc/rfc6749.html#section-10.10), [HTTP 429 and Retry-After](https://www.rfc-editor.org/rfc/rfc6585.html#section-4), [Express proxy trust](https://expressjs.com/en/guide/behind-proxies.html), and [Node HTTP transport defaults](https://nodejs.org/api/http.html). Operator guidance checked September 18, 2026.
 
@@ -298,59 +301,27 @@ This milestone supports managed install/restart/apply/rollback on **Windows**. `
 
 Platform references: [Task Scheduler logon triggers](https://learn.microsoft.com/en-us/powershell/module/scheduledtasks/new-scheduledtasktrigger), [task recovery settings](https://learn.microsoft.com/en-us/powershell/module/scheduledtasks/new-scheduledtasksettingsset), [current-user DPAPI](https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.protecteddata), and [Node child-process lifecycle](https://nodejs.org/api/child_process.html). Checked September 18, 2026.
 
-## More than one computer: named host profiles
+## One instance per computer
 
-Use **one independent Hostgate server and ChatGPT connection per computer**, not a central shell proxy. Existing unprofiled operation is unchanged and never migrates its credentials/state automatically. Creating profiles does not activate or restart any server.
+Run one Hostgate instance on each computer, with its own credentials, OAuth state, local service and HTTPS MCP endpoint. Add **a separate ChatGPT app/plugin connection for every endpoint**. Friendly labels such as "Personal Laptop" and "Spice Mart Shop Laptop" belong to those ChatGPT connections, not to Hostgate. Hostgate does not maintain a computer catalog, select remote targets, forward commands, or manage another computer's state.
 
-On the first computer, create its own local identity; on the second, repeat with a different name and HTTPS origin:
+Choose the intended app in each chat/project and name that connection in your instructions. A request goes to the endpoint attached to that connection; the server cannot independently infer which computer the user intended. Do not substitute a different connection when one is unavailable. Start with its read-only `status` tool to check the hostname. Refresh connection metadata after a separately authorized deployment; this source update does not activate or change either computer's app.
 
-```powershell
-node .\bin\hostgate.js host add "Primary laptop" --local --endpoint https://primary.example/hostgate/mcp --cwd "C:\Work" --yes
-node .\bin\hostgate.js host add "Second laptop" --local --endpoint https://second.example/hostgate/mcp --cwd "C:\Work" --yes
-```
+### Per-call working directory and correlation
 
-Run each command **on the named computer**, with its real existing working directory and verified HTTPS proxy URL. Local IDs are generated UUIDs, not aliases or machine names. Profiles are also bound to the local platform/hostname to catch accidental catalog copies; that is not hardware attestation. Names (case-insensitively), IDs and HTTPS origins must be distinct within a catalog, including retired records. The endpoint is immutable in this first version. No network request is made by add/list/inspect/select/rename/remove.
+The four tools need no host ID, name, target object or routing card. `shell`, `read`, and `write` accept optional `cwd`: use an absolute directory or `~/...`; omitted means the service user's home, preserving existing callers. Relative file paths use that call's base; absolute and `~/...` paths remain available. Windows drive-relative working directories are rejected. These rules resolve ambiguity, not limit authorized filesystem access.
 
-Configure each host separately with `host configure NAME --import-stdin --yes`. Supply local JSON containing exactly `HOST` (loopback), `PORT` (a fixed port as a string), `HOSTGATE_OAUTH_USERNAME`, and `HOSTGATE_OAUTH_PASSWORD`. It never inherits the legacy server's or another profile's credentials, prints their values, or overwrites an existing credential store. Use different credentials per computer; keep input files out of source control and chat. Windows stores current-user DPAPI ciphertext; Linux stores a private mode-0600 file. Host ID and endpoint are bound inside the protected configuration. Start only when separately authorized with `host start NAME`; this is foreground operation.
+For example, a Windows shell tool call can use `{"command":"Get-Location","cwd":"C:\\Work\\ProjectA","contextId":"ProjectA/chat1"}`. On Linux, use `pwd` and a Linux directory. Every shell call launches a separate PowerShell/Bash process; changing its variables or directory does not change a later call. Requests are not put into a shared execution queue. Independent work should still use separate directories or Git worktrees: unrestricted commands that intentionally edit the same files can conflict.
 
-A catalog can also describe another computer without storing its credentials or executing anything there:
+All tools accept an optional `contextId` correlation label (1–128 letters, digits, `._:/-`; start with a letter/digit). It is not required for execution and is never authorization or a host selector. Results carry `execution` metadata: a process-instance ID, request/execution IDs, connection and context keys, timing, and audit status. Optional OpenAI conversation metadata is hashed, never treated as proof of identity. Connection/context keys are process-instance scoped and change after restart. Unknown tool arguments are rejected, including obsolete cached target objects; refresh the app's tools rather than silently dropping fields.
 
-```text
-node bin/hostgate.js host add "Second laptop" --remote --id UUID_FROM_SECOND_LAPTOP --platform win32 --endpoint https://second.example/hostgate/mcp --cwd "C:\Work" --yes
-node bin/hostgate.js host list
-node bin/hostgate.js host inspect "Primary laptop"
-node bin/hostgate.js host rename "Primary laptop" "Main laptop" --yes
-node bin/hostgate.js host select "Main laptop" --context ProjectA/chat1 --cwd "C:\Work\ProjectA" --yes
-node bin/hostgate.js host inspect --context ProjectA/chat1
-node bin/hostgate.js host route "Second laptop" --context ProjectB/chat2
-node bin/hostgate.js host remove "Second laptop" --yes
-```
+Completion metadata is appended to `~/.local/share/hostgate/executions.jsonl`. Inspect the last 100 entries with `node bin/hostgate.js logs --executions` on either OS; existing lifecycle logs are unchanged. Logs omit commands, output, file paths/content, raw context/session labels, credentials and tokens. Results still include requested tool output. Audit failures set `execution.auditRecorded=false` and do not replay the action. Automatic log rotation is not implemented.
 
-For a remote record, copy the **non-secret ID, canonical host name and endpoint** from that computer's inspection. Linux remote profiles use `--platform linux` and an absolute Linux cwd. A local catalog label that does not match the target server's name will be rejected at execution; it is not permission to rewrite the routing card. Remote start/configure/service/update/log commands are refused rather than accidentally operating on the current laptop.
+### Existing deployments from the retired profile implementation
 
-**Select stores only a project/chat-specific routing card, never a global execution default.** All runtime/lifecycle commands still require an explicit name/ID. Registry mutations use an exclusive lock and atomic replacement; competing writers fail without losing selections. An interrupted edit can leave a lock that needs local inspection. Removal retires the entry and its selections, reserves its identity/origin, and retains all credentials, OAuth state, deployments and logs. It does not revoke a remote connection. A running local process or configured manager blocks removal. Renaming a running local profile makes further requests fail closed until an explicit restart; IDs and state paths do not change.
+No old catalog, credential, deployment or OAuth files are deleted, copied, or silently imported by this cleanup. Retired profile launch variables, profile deployment manifests and version-2 profile OAuth state fail closed and need a separately designed migration to the ordinary single-instance paths. Do not point a profiled launcher at this release or delete state to force it to start. Already-running instances keep running their loaded code until explicitly deployed/restarted. Ordinary unprofiled deployments preserve their existing configuration/state paths.
 
-### ChatGPT connection and project routing
-
-Create separately named connections, for example **Hostgate - Primary laptop** and **Hostgate - Second laptop**, each using that host's exact endpoint and its own OAuth sign-in. Current official developer-mode instructions use **Settings → Security and login → Developer mode**, then **Plugins → plus → name/description → connection URL**; availability depends on workspace policy. After deployment, refresh that connection's tools and start a new conversation. Use the official guide when your UI differs. No ChatGPT settings are changed by this CLI.
-
-Put the output of `host route NAME --context PROJECT/CHAT [--cwd ABSOLUTE_PATH]` in that project's instructions or the chat. It supplies a `target` object containing the immutable host ID, canonical name, and endpoint, plus an explicit context and working directory. Instruct ChatGPT to use **only that named connection**, preserve the target exactly, and stop on mismatch—never substitute another connection or modify the target to make a call pass.
-
-In profiled mode, **all four tools require the exact target and contextId**. Shell also requires a per-call cwd; relative file paths require cwd. The server compares ID, name and endpoint **before** invoking a handler. Missing/mismatched targets fail without the requested side effect; explicitly targeted calls reaching a legacy server fail too. Tool descriptions, initialization, health and results identify the host. Shell/write retain their destructive warnings and unrestricted OS-account capability.
-
-Each call gets server-generated request/execution IDs, a host-scoped OAuth connection ID, and a context key. An optional OpenAI conversation identifier is hashed for correlation; it is not authentication. No shared current directory, shell session, or current project is mutated between requests. Native children run concurrently; logs contain completion metadata, not commands, output, file contents, paths, passwords or tokens.
-
-**Boundary:** Hostgate cannot read the user's natural-language intention or independently establish a ChatGPT project-to-host binding. It rejects a misaddressed structured request, but cannot detect a caller that supplies an entirely different, internally consistent routing card. Context labels/optional conversation metadata are not authorization. Full authorized shell access is deliberately not a filesystem/process sandbox: two commands intentionally editing the same files can conflict, and an authorized account can deliberately access its other profiles. Use distinct directories or Git worktrees for independent work.
-
-### Per-host state and operations
-
-Host catalog: `~/.config/hostgate/hosts.json`. Each ID has its own `~/.config/hostgate/hosts/ID/` credential and managed-deployment directory, and `~/.local/share/hostgate/hosts/ID/` OAuth state, runtime status and execution logs. Relative paths above follow the OS account's home. Do not copy private stores between computers. OAuth client registrations, codes and tokens are independent; profiled state and opaque token records are bound to ID/resource. Cross-host credentials/state copies fail closed. Profile OAuth requires the canonical endpoint in the `resource` parameter; root and `/hostgate` route aliases advertise that same resource. Existing unprofiled tokens/routes keep their old behavior.
-
-`host status NAME`, `host doctor NAME`, and `host logs NAME` inspect only that local profile. Status requires identity-matched health; a remote record is not treated as a locally running host. Windows `host service NAME plan|prepare` retains the read-only/no-secret contract and uses distinct profile paths/task names. `host service NAME install --yes` uses only that profile's separately configured environment; legacy PID adoption is not performed. Other service/update operations use the same explicit-host prefix and require their existing confirmations. Per-host launchers remain pinned to their profile; an update cannot drop named-host support silently.
-
-Linux named-host foreground operation is supported; automatic per-profile systemd installation and managed update application remain unsupported, and the legacy systemd service is never implicitly reused. Initial-adoption/partial-install recovery limitations remain as documented above. No real two-computer ChatGPT UI test or production activation is implied by isolated automated tests.
-
-Official references, checked September 18, 2026: [connect/refresh MCP connections](https://developers.openai.com/plugins/deploy/connect-chatgpt), [conversation metadata](https://developers.openai.com/plugins/reference#_meta-fields-the-client-provides), [MCP resource/audience binding](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization).
+References: [OpenAI connection and refresh workflow](https://developers.openai.com/plugins/deploy/connect-chatgpt), [optional conversation metadata](https://developers.openai.com/plugins/reference#_meta-fields-the-client-provides). Verified September 18, 2026.
 
 ## Development
 

@@ -1,4 +1,3 @@
-import { activeHostId, hostPaths } from "./host-paths.js";
 import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -12,7 +11,7 @@ export const MANAGER_API = 1;
 export const sourceDir = path.dirname(fileURLToPath(import.meta.url));
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 export const digest = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
-export const managedHome = (home = os.homedir(), id = activeHostId()) => id ? hostPaths(id, home).managed : path.join(home, ".config", "hostgate", "managed");
+export const managedHome = (home = os.homedir()) => path.join(home, ".config", "hostgate", "managed");
 export function readJson(file, fallback = null) {
   try { return JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "")); }
   catch (error) { if (error.code === "ENOENT") return fallback; throw new Error("Managed state is unreadable; no state was replaced."); }
@@ -47,6 +46,7 @@ export function normalizeEnvironment(input) {
   const result = {};
   const seen = new Set();
   for (const [key, value] of Object.entries(input)) {
+    if (/^HOSTGATE_PROFILE_(ID|STAGING)$/i.test(key)) throw new Error("Retired profile environment requires explicit single-instance migration.");
     if (!key || key.includes("=") || key.includes("\0") || typeof value !== "string" || value.includes("\0")) throw new Error("Invalid saved environment entry.");
     if (seen.has(key.toUpperCase())) throw new Error("Duplicate case-insensitive environment entries.");
     seen.add(key.toUpperCase());
@@ -76,7 +76,7 @@ export function healthUrl(env) {
   if (host.includes(":" ) && !host.startsWith("[")) host = `[${host}]`;
   return `http://${host}:${environmentValue(env, "PORT") || 8787}/hostgate/health`;
 }
-export function health(url, timeout = 3000, expectedHost = null) {
+export function health(url, timeout = 3000, expectedResource = null) {
   return new Promise((resolve) => {
     let finished = false;
     const done = (ok) => { if (!finished) { finished = true; clearTimeout(timer); resolve(ok); } };
@@ -85,7 +85,7 @@ export function health(url, timeout = 3000, expectedHost = null) {
       res.setEncoding("utf8");
       res.on("data", (chunk) => { text += chunk; if (text.length > 4096) { done(false); res.destroy(); } });
       res.on("error", () => done(false));
-      res.on("end", () => { try { const body = JSON.parse(text); done(res.statusCode === 200 && body.ok === true && body.name === "hostgate" && (!expectedHost || body.host?.hostId === expectedHost.hostId && body.host?.endpoint === expectedHost.endpoint)); } catch { done(false); } });
+      res.on("end", () => { try { const body = JSON.parse(text); done(res.statusCode === 200 && body.ok === true && body.name === "hostgate" && (!expectedResource || body.resource === expectedResource)); } catch { done(false); } });
     });
     const timer = setTimeout(() => { done(false); req.destroy(); }, timeout);
     req.on("error", () => done(false));
@@ -103,7 +103,7 @@ export function taskMatches(task, config) {
 export async function managedStatus(directory = managedHome()) {
   const config = readJson(path.join(directory, "deployment.json"));
   if (!config) return { configured: false, running: false, restartReady: false, autostart: false };
-  if (config.profileId && hostPaths(config.profileId, config.homeDir).managed !== directory || activeHostId() && config.profileId !== activeHostId()) throw new Error("Managed deployment belongs to another host; no fallback.");
+  if (config.profileId) throw new Error("Retired profile deployment requires explicit migration; no fallback to another state directory.");
   const state = readJson(path.join(directory, "status.json"), {});
   let env;
   let decryptable = false;
@@ -114,11 +114,10 @@ export async function managedStatus(directory = managedHome()) {
     path.join(config.current.path, "src", "server.js")].every((p) => typeof p === "string" && fs.existsSync(p));
   const recent = Date.now() - Date.parse(state.heartbeat || "") < 15000;
   const running = recent && alive(state.supervisorPid) && alive(state.childPid) && state.phase === "running" &&
-    state.commit === config.current.commit && state.releasePath === config.current.path && !!env && await health(healthUrl(env), 3000, config.profileId ? { hostId: config.profileId, endpoint: config.profileEndpoint } : null);
+    state.commit === config.current.commit && state.releasePath === config.current.path && !!env && await health(healthUrl(env), 3000, env.HOSTGATE_PUBLIC_URL || null);
   const startMatches = !!state.lastSuccessfulStart && state.environmentHash === digest(fs.readFileSync(path.join(directory, "environment.dpapi")));
   return { configured: true, running: !!running, restartReady: !!(runtimePresent && decryptable && startMatches && state.commit === config.current.commit && state.releasePath === config.current.path && taskMatches(task, config)),
     autostart: !!taskMatches(task, config), decryptable, runtimePresent,
-    ...(config.profileId ? { profileId: config.profileId } : {}),
     npmAvailable: !!config.npmCli && fs.existsSync(config.npmCli),
     host: env ? environmentValue(env, "HOST") || "127.0.0.1" : undefined,
     port: env ? Number(environmentValue(env, "PORT") || 8787) : undefined,

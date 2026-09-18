@@ -188,8 +188,7 @@ export async function collectDoctor(options, io = {}) {
       : `Check the Hostgate terminal and configured address. Start with ${cli} start only after checking for an existing instance; do not stop an unidentified process.`);
   }
 
-  if (platform === "linux" && options.profile) add("background", "unverified", "This named Linux profile has no automatic systemd installer. Use an explicit per-profile launcher; the legacy service is not inspected.");
-  else if (platform === "linux") {
+  if (platform === "linux") {
     const active = invoke("systemctl", ["--user", "is-active", "--quiet", "hostgate.service"]);
     add("background", active.ok ? "ok" : "unverified", active.ok ? "The Linux user service is active; boot behavior is not verified." : "No active Linux user service was verified.",
       active.ok ? "" : `Foreground operation remains available with ${cli} start. Automatic onboarding needs a working systemd user session.`);
@@ -199,7 +198,8 @@ export async function collectDoctor(options, io = {}) {
 
   let url = null;
   let invalidUrl = false;
-  if (publicUrl !== null) { try { url = connectorUrl(publicUrl); } catch { invalidUrl = true; } }
+  const suppliedUrl = publicUrl ?? values.HOSTGATE_PUBLIC_URL ?? null;
+  if (suppliedUrl !== null) { try { url = connectorUrl(suppliedUrl); } catch { invalidUrl = true; } }
   if (!url && !invalidUrl) {
     const status = invoke(platform === "win32" ? "tailscale.exe" : "tailscale", ["funnel", "status", "--json"]);
     let candidates = [];

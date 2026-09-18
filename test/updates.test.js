@@ -144,8 +144,14 @@ test("source mutation during preparation prevents activation", async () => {
 });
 
 
-test("profile releases cannot lose routing support during update preparation", async () => {
-  const f = fixture();
-  await assert.rejects(prepareRelease({ repoRoot: f.repo, commit: f.second, directory: f.manager, npmCli: f.npmCli, profileId: crypto.randomUUID() }), /named-host routing/);
-  assert.equal(readJson(path.join(f.manager, "deployment.json")).current.commit, f.first);
+test("retired profile deployment refuses updates before any prepare, fetch or activation", async () => {
+  const f = fixture(); const state = { ...f.config, profileId: crypto.randomUUID() };
+  writeJson(path.join(f.manager, "deployment.json"), state);
+  const before = fs.readFileSync(path.join(f.manager, "deployment.json"));
+  await assert.rejects(performUpdate({ yes: true, expected: f.second, directory: f.manager }, {
+    check: () => assert.fail("No network/checkout check should be reached"),
+    prepare: () => assert.fail("No release preparation should be reached"),
+    queue: () => assert.fail("No activation should be queued")
+  }), /explicit migration/);
+  assert.deepEqual(fs.readFileSync(path.join(f.manager, "deployment.json")), before);
 });

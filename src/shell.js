@@ -1,4 +1,4 @@
-import { statSync } from "node:fs";
+import { resolveExecutionDirectory } from "./execution.js";
 import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -56,8 +56,7 @@ export function shellCommand(command, platform = process.platform, env = process
 }
 
 export function runShell(command, options = {}) {
-  const cwd = options.cwd === undefined ? os.homedir() : path.resolve(os.homedir(), options.cwd);
-  if (!statSync(cwd).isDirectory()) throw new Error("Shell working directory must exist.");
+  const cwd = resolveExecutionDirectory(options.cwd);
   // Reassert an explicit cwd after Linux login profiles, without changing parent state.
   const script = options.cwd !== undefined && process.platform !== "win32" ? "cd -- '" + cwd.replaceAll("'", "'\"'\"'") + "' || exit;\n" + command : command;
   const spec = shellCommand(script);

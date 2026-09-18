@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { alive, digest, health, healthUrl, readJson, savedEnvironment, sleep, windows, writeJson } from "./managed-common.js";
 
 export function stageEnvironment(environment) {
-  return { ...Object.fromEntries(Object.entries(environment).filter(([key]) => !["HOST", "PORT"].includes(key.toUpperCase()))), HOST: "127.0.0.1", PORT: "0", ...(environment.HOSTGATE_PROFILE_ID ? { HOSTGATE_PROFILE_STAGING: "1" } : {}) };
+  return { ...Object.fromEntries(Object.entries(environment).filter(([key]) => !["HOST", "PORT"].includes(key.toUpperCase()))), HOST: "127.0.0.1", PORT: "0" };
 }
 export async function startChild(config, release, environment, { staged = false } = {}) {
   const child = fork(config.childPath, [release.path], {
@@ -28,7 +28,7 @@ export async function startChild(config, release, environment, { staged = false 
   try {
     const ready = await readiness;
     const url = staged ? `http://127.0.0.1:${ready.port}/hostgate/health` : healthUrl(environment);
-    if (!await health(url, 3000, config.profileId ? { hostId: config.profileId, endpoint: config.profileEndpoint } : null)) throw new Error("Server health verification failed.");
+    if (!await health(url, 3000, environment.HOSTGATE_PUBLIC_URL || null)) throw new Error("Server health verification failed.");
     if (child.exitCode !== null || child.signalCode !== null) throw new Error("Server exited during verification.");
     return child;
   } catch (error) { await stopChild(child); throw error; }
@@ -46,12 +46,12 @@ export async function supervise(directory) {
   const configPath = path.join(directory, "deployment.json");
   let config = readJson(configPath);
   if (!config || config.schemaVersion !== 1 || config.managerApi !== 1) throw new Error("Unsupported manager configuration.");
+  if (config.profileId) throw new Error("Retired profile deployment requires explicit migration before startup.");
   const pipe = process.platform === "win32" ? `\\\\.\\pipe\\hostgate-supervisor-${digest(directory.toLowerCase()).slice(0, 24)}` : path.join(directory, "supervisor.sock");
   const lock = net.createServer((socket) => socket.destroy()); // Exclusivity only; no network management API.
   const acquired = await new Promise((resolve) => { lock.once("error", () => resolve(false)); lock.listen(pipe, () => resolve(true)); });
   if (!acquired) return;
   const environment = savedEnvironment(directory, config.adapterPath);
-  if (config.profileId && environment.HOSTGATE_PROFILE_ID !== config.profileId) throw new Error("Managed profile environment mismatch.");
   const environmentHash = digest(fs.readFileSync(path.join(directory, "environment.dpapi")));
   let currentChild = null;
   const state = { schemaVersion: 1, supervisorPid: process.pid, instance: crypto.randomUUID(), phase: "starting", environmentHash };
@@ -125,7 +125,6 @@ export async function supervise(directory) {
             const candidate = path.resolve(job.release.path);
             const releases = path.resolve(directory, "releases") + path.sep;
             if (!candidate.startsWith(releases) || !/^[a-f0-9]{40}$/.test(job.release.commit) || !fs.existsSync(path.join(candidate, "src", "server.js"))) throw new Error("Invalid managed release.");
-            if (config.profileId && readJson(path.join(candidate, "package.json"))?.hostgateHostProfilesApi !== 1) throw new Error("Release lacks named-host routing support.");
             result = await transition(job.release);
           } else throw new Error("Unsupported manager request.");
         } catch (error) {

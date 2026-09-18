@@ -8,6 +8,9 @@ Perimeter security is the primary security objective: OAuth correctness, PKCE, t
 
 Preserve exactly four MCP tools: `status`, `read`, `write`, and `shell`. New CLI commands are not additional MCP tools. Preserve Windows PowerShell, Linux Bash, root routes, and `/hostgate` routes. OAuth, registration, token, or issuer changes require a deliberate compatibility/migration plan. Do not silently rotate credentials, revoke active connections, or change the OS account or elevation level.
 
+
+Use one Hostgate instance per computer and a separate ChatGPT app/connection per MCP endpoint. Keep computer naming and connection selection in ChatGPT, not a Hostgate catalog or remote-host router. Preserve explicit per-call cwd, concurrent subprocess isolation, and generic request/execution correlation; context labels are telemetry, not authorization.
+
 ## Beginner experience
 
 Build toward Windows-first guided setup that detects prerequisites, creates or preserves credentials appropriately, starts Hostgate, verifies HTTPS/tunneling, provides accurate ChatGPT connection steps and copyable URLs, checks health, and supports a safe first test. Users should not need to understand Node.js, MCP, OAuth, PKCE, ports, or systemd. Keep Linux onboarding explicit and usable.

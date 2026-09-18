@@ -1,5 +1,4 @@
 import crypto from "node:crypto";
-import { activeHostId } from "./host-paths.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -36,9 +35,6 @@ export async function installManaged(repoRoot, environment, options = {}, io = {
   const existing = readJson(path.join(directory, "deployment.json"));
   if (existing) throw new Error("A managed installation already exists. Use service start/restart/status; credentials were not overwritten.");
   const env = normalizeEnvironment(environment);
-  const id = activeHostId();
-  const profile = id ? (await import("./host-profiles.js")).localHost(id) : null;
-  if ((!profile && env.HOSTGATE_PROFILE_ID !== undefined) || profile && (env.HOSTGATE_PROFILE_ID !== profile.id || options.adoptPid)) throw new Error("Profile environment identity mismatch or unsupported legacy adoption.");
   const home = environmentValue(env, "USERPROFILE") || environmentValue(env, "HOME") || os.homedir();
   if (path.resolve(home).toLowerCase() !== path.resolve(os.homedir()).toLowerCase()) throw new Error("The imported environment belongs to a different home directory.");
   if (environmentValue(env, "HOME") && path.resolve(environmentValue(env, "HOME")).toLowerCase() !== path.resolve(os.homedir()).toLowerCase()) throw new Error("HOME must remain this Windows account's home directory.");
@@ -48,7 +44,7 @@ export async function installManaged(repoRoot, environment, options = {}, io = {
   const secured = adapter("secure", { directory });
   if (secured.elevated) throw new Error("Run installation from an ordinary, non-elevated terminal; do not silently change an elevated server token.");
   for (const name of ["runtime", "releases", "builds", "requests", "results", "updates"]) fs.mkdirSync(path.join(directory, name), { recursive: true, mode: 0o700 });
-  const taskName = `Hostgate-${digest(secured.sid + (profile ? ":" + profile.id : "")).slice(0, 12)}`;
+  const taskName = `Hostgate-${digest(secured.sid).slice(0, 12)}`;
   if (adapter("inspect-task", { name: taskName }).exists) throw new Error("The target task name is occupied. No existing task was overwritten.");
   let bootstrap = null;
   if (options.adoptPid) {
@@ -65,10 +61,10 @@ export async function installManaged(repoRoot, environment, options = {}, io = {
   const nodePath = path.join(runtime, "node.exe");
   fs.copyFileSync(process.execPath, nodePath, fs.constants.COPYFILE_EXCL);
   if (digest(fs.readFileSync(nodePath)) !== digest(fs.readFileSync(process.execPath))) throw new Error("Bundled runtime verification failed.");
-  for (const name of ["managed-common.js", "host-paths.js", "supervisor.js", "managed-child.js", "windows-manager.ps1"]) fs.copyFileSync(path.join(sourceDir, name), path.join(runtime, name), fs.constants.COPYFILE_EXCL);
+  for (const name of ["managed-common.js", "supervisor.js", "managed-child.js", "windows-manager.ps1"]) fs.copyFileSync(path.join(sourceDir, name), path.join(runtime, name), fs.constants.COPYFILE_EXCL);
   fs.writeFileSync(path.join(runtime, "package.json"), '{"type":"module"}\n', { flag: "wx", mode: 0o600 });
   const npmCli = options.npmCli || findNpm(process.execPath, directory);
-  const release = await (io.prepare || prepareRelease)({ repoRoot, commit, directory, nodePath, npmCli, profileId: profile?.id });
+  const release = await (io.prepare || prepareRelease)({ repoRoot, commit, directory, nodePath, npmCli });
   const protectedEnv = adapter("protect", { text: JSON.stringify(env) });
   const encryptedPath = path.join(directory, "environment.dpapi");
   fs.writeFileSync(encryptedPath, protectedEnv.ciphertext + "\n", { flag: "wx", mode: 0o600 });
@@ -77,11 +73,10 @@ export async function installManaged(repoRoot, environment, options = {}, io = {
   const config = { schemaVersion: 1, managerApi: 1, directory, homeDir: os.homedir(), repoRoot, origin, sid: secured.sid,
     taskName, nodePath, npmCli, gitPath: gitExecutable(), supervisorPath: path.join(runtime, "supervisor.js"),
     childPath: path.join(runtime, "managed-child.js"), adapterPath: path.join(runtime, "windows-manager.ps1"),
-    ...(profile ? { profileId: profile.id, profileEndpoint: profile.endpoint, workingDirectory: profile.cwd } : {}),
     current: release, previous: null, bootstrap, installedAt: new Date().toISOString() };
   writeJson(path.join(directory, "deployment.json"), config);
   // Stable fresh-terminal entry point uses a private runtime, not PATH or a temporary preload.
-  const wrapper = `import fs from 'node:fs'; import {pathToFileURL} from 'node:url';\nconst c=JSON.parse(fs.readFileSync(${JSON.stringify(path.join(directory, "deployment.json"))},'utf8'));\nconst args=process.argv.slice(2);\nprocess.argv=[process.execPath,c.current.path+'/bin/hostgate.js',...(c.profileId ? ['host',args[0]||'inspect',c.profileId,...args.slice(1)] : args)];\nawait import(pathToFileURL(process.argv[1]).href);\n`;
+  const wrapper = `import fs from 'node:fs'; import {pathToFileURL} from 'node:url';\nconst c=JSON.parse(fs.readFileSync(${JSON.stringify(path.join(directory, "deployment.json"))},'utf8'));\nprocess.argv=[process.execPath,c.current.path+'/bin/hostgate.js',...process.argv.slice(2)];\nawait import(pathToFileURL(process.argv[1]).href);\n`;
   fs.writeFileSync(path.join(directory, "control.mjs"), wrapper, { flag: "wx", mode: 0o600 });
   fs.writeFileSync(path.join(directory, "hostgate.cmd"), `@echo off\r\n"${nodePath}" "${path.join(directory, "control.mjs")}" %*\r\n`, { flag: "wx", mode: 0o600 });
   adapter("install-task", { name: taskName, executable: nodePath, arguments: `"${config.supervisorPath}" "${directory}"`, directory }, config.adapterPath);
@@ -119,6 +114,7 @@ export async function serviceCli(args, repoRoot, environmentProvider) {
   }
   const config = readJson(path.join(directory, "deployment.json"));
   if (!config) throw new Error("Managed startup is not configured.");
+  if (config.profileId) throw new Error("Retired profile deployment requires explicit migration; no task was started or changed.");
   let task = windows("inspect-task", { name: config.taskName }, config.adapterPath);
   if (options.operation === "repair" && !task.exists) {
     windows("install-task", { name: config.taskName, executable: config.nodePath, arguments: `"${config.supervisorPath}" "${directory}"`, directory }, config.adapterPath);

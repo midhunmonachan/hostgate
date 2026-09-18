@@ -12,6 +12,6 @@ oauth-state.json
 *.tgz
 coverage/
 
-# Named-host credential stores never belong in source control.
+# Retired credential artifacts must remain outside source control.
 credentials.dpapi
 credentials.json

@@ -252,7 +252,7 @@ test("isolated local CLI, OAuth, and MCP smoke test", { timeout: 90000 }, async 
     assert.equal(existsSync(deniedPath), false);
   });
 
-  await t.test("legacy endpoint rejects an explicitly named-host request before any write", async () => {
+  await t.test("obsolete cached target arguments are rejected rather than ignored", async () => {
     const file = path.join(home, "named-host-must-not-land-on-legacy.txt");
     const result = await rpc(base, allToken, "tools/call", { name: "write", arguments: { path: file, content: "not written", contextId: "project/chat", target: { hostId: crypto.randomUUID(), hostName: "Second laptop", endpoint: "https://second.example.test/mcp" } } });
     assert.equal(result.isError, true); assert.equal(existsSync(file), false);

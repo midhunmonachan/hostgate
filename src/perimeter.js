@@ -15,7 +15,7 @@ export const RATES = Object.freeze({
   token: Object.freeze({ capacity: 60, refillMs: 1000 }),
   password: Object.freeze({ capacity: 5, refillMs: 12000 })
 });
-const SCALAR_FIELDS = ["response_type", "client_id", "redirect_uri", "code_challenge",
+const SCALAR_FIELDS = ["resource", "response_type", "client_id", "redirect_uri", "code_challenge",
   "code_challenge_method", "state", "scope", "username", "password", "grant_type", "code", "code_verifier"];
 
 export function configuredClientLimit(env = process.env) {

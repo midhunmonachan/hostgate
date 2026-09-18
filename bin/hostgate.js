@@ -26,13 +26,13 @@ function usage() {
 Usage:
   hostgate onboard      Configure; install/start a user service on Linux only
   hostgate start        Run in the foreground with saved configuration
-  hostgate host         Explicit named hosts, routing cards and isolated local runtimes
   hostgate service      Windows managed install/start/restart/status
   hostgate service plan Read-only install preview (prepare is an alias)
   hostgate update       Check/apply a confirmed GitHub update or rollback
   hostgate doctor [--json] [--url HTTPS_URL]  Check setup without changing it
   hostgate status       Linux: service status; Windows: HTTP health check
   hostgate logs [-f]     Linux: journal logs; Windows: use foreground output
+  hostgate logs --executions  Read single-instance execution metadata
   hostgate help         Show this help
 
 Windows: service install --yes creates user-logon recovery with protected settings.
@@ -91,6 +91,7 @@ function serializeEnv(values) {
     "HOSTGATE_OAUTH_USERNAME",
     "HOSTGATE_OAUTH_PASSWORD"
   ];
+  if (values.has("HOSTGATE_PUBLIC_URL")) keys.push("HOSTGATE_PUBLIC_URL");
   return `${keys.map((key) => `${key}=${values.get(key) ?? ""}`).join("\n")}\n`;
 }
 
@@ -350,7 +351,13 @@ WantedBy=default.target
 `;
 }
 
-function logs(follow) {
+function logs(follow, executions = false) {
+  if (executions) {
+    const file = path.join(os.homedir(), ".local/share/hostgate/executions.jsonl");
+    console.log(existsSync(file) ? readFileSync(file, "utf8").trim().split(/\r?\n/).slice(-100).join("\n") : "No execution metadata recorded.");
+    if (follow) console.log("Snapshot only; rerun logs to refresh.");
+    return;
+  }
   if (isWindows && existsSync(path.join(managedHome(), "deployment.json"))) {
     const log = path.join(managedHome(), "events.jsonl");
     console.log(existsSync(log) ? readFileSync(log, "utf8").trim().split(/\r?\n/).slice(-100).join("\n") : "No managed lifecycle events yet.");
@@ -415,11 +422,6 @@ async function status() {
 try {
   const [command, ...args] = process.argv.slice(2);
   switch (command || "help") {
-    case "host": {
-      const { hostCli } = await import("../src/host-cli.js");
-      await hostCli(args, projectRoot);
-      break;
-    }
     case "onboard":
     case "setup":
       await onboard();
@@ -468,7 +470,7 @@ try {
       await status();
       break;
     case "logs":
-      logs(args.includes("-f") || args.includes("--follow"));
+      logs(args.includes("-f") || args.includes("--follow"), args.includes("--executions"));
       break;
     case "help":
     case "--help":
