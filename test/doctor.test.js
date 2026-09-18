@@ -49,7 +49,7 @@ async function diagnose(options = {}, overrides = {}) {
 test("doctor reports availability separately from unverified sign-in and boot readiness", async () => {
   const { report, commands, urls, get } = await diagnose();
   assert.equal(report.exitCode, 0);
-  for (const id of ["runtime", "dependencies", "npm", "shell", "restart", "local", "tunnel", "https", "discovery", "auth-gate"]) assert.equal(get(id).status, "ok", id);
+  for (const id of ["runtime", "dependencies", "npm", "shell", "local", "tunnel", "https", "discovery", "auth-gate"]) assert.equal(get(id).status, "ok", id);
   assert.equal(get("signin").status, "unverified");
   assert.equal(get("background").status, "unverified");
   assert.match(get("restart").message, /restart has not been tested/);
@@ -82,7 +82,7 @@ test("doctor recognizes saved legacy credentials and respects environment bindin
   const { get } = await diagnose({ readConfig: () => ({ ...config(), source: "legacy" }), env: { PORT: "9999", HOST: "::" } }, {
     probe: async (url) => { visited.push(url); return healthy(url); }
   });
-  assert.equal(get("restart").status, "ok");
+  assert.equal(get("restart").status, "unverified");
   assert.equal(visited[0], "http://[::1]:9999/hostgate/health");
   assert.equal(get("tunnel").status, "unverified");
 });
@@ -269,7 +269,7 @@ test("real doctor CLI preserves isolated configuration and OAuth state and repor
   const report = JSON.parse(stdout);
   assert.equal(code, report.exitCode);
   assert.equal(report.checks.find((check) => check.id === "local").status, "ok");
-  assert.equal(report.checks.find((check) => check.id === "restart").status, "ok");
+  assert.equal(report.checks.find((check) => check.id === "restart").status, "unverified");
   assert.equal(report.checks.find((check) => check.id === "signin").status, "unverified");
   assert(!stdout.includes(password));
   assert.deepEqual(snapshot(home), before);

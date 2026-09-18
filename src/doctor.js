@@ -140,8 +140,8 @@ export async function collectDoctor(options, io = {}) {
   add("dependencies", missing.length ? "attention" : "ok",
     missing.length ? `Required packages are missing: ${missing.join(", ")}.` : "Required package entry points are installed (not a version or integrity audit).",
     missing.length ? `In your checkout, run ${platform === "win32" ? "npm.cmd" : "npm"} ci after installing npm.` : "");
-  const npm = found(platform === "win32" ? "npm.cmd" : "npm");
-  add("npm", npm ? "ok" : "attention", npm ? "npm is on PATH." : "npm was not found in this terminal.",
+  const npm = options.managed?.npmAvailable || found(platform === "win32" ? "npm.cmd" : "npm");
+  add("npm", npm ? "ok" : "attention", npm ? (options.managed?.npmAvailable ? "npm is configured for managed updates." : "npm is on PATH.") : "npm was not found in this terminal.",
     npm ? "" : "Use a Node.js installation that includes npm and reopen the terminal. An already running Hostgate can still work.");
 
   if (["win32", "linux"].includes(platform)) {
@@ -159,7 +159,7 @@ export async function collectDoctor(options, io = {}) {
   const saved = ["user", "legacy"].includes(config.source) && Boolean(config.values.HOSTGATE_OAUTH_PASSWORD);
   const values = { ...config.values, ...env }; // Same precedence and raw-value parser as CLI start.
   const emptyOverride = saved && !values.HOSTGATE_OAUTH_PASSWORD;
-  add("restart", configReadable && saved && !emptyOverride ? "ok" : "attention",
+  add("restart", configReadable && saved && !emptyOverride ? "unverified" : "attention",
     emptyOverride ? "This terminal overrides the saved password with an empty value; startup would fail."
       : !configReadable ? "Saved configuration could not be read." : saved
       ? "Saved credentials are present; a restart has not been tested."
@@ -167,7 +167,16 @@ export async function collectDoctor(options, io = {}) {
     emptyOverride ? "Review the terminal environment; do not replace the saved password or stop a working server."
       : saved && configReadable ? "Environment overrides are not saved. Do not assume boot/autostart or a fresh-shell restart is verified."
       : `Do not stop a working server. Review its deployment settings first; for a new installation run ${cli} onboard.`);
-  const base = configReadable ? localBase(values) : null;
+  const managed = options.managed;
+  if (managed?.configured) {
+    const restart = checks.find((c) => c.id === "restart");
+    restart.status = managed.restartReady ? "ok" : "attention";
+    restart.message = managed.restartReady ? "Saved managed environment and runtime passed a real start; fresh-terminal restart is ready." : "Managed configuration exists but restart prerequisites or a successful launch are missing.";
+    restart.nextStep = "Use hostgate service status. This does not claim an actual reboot has been tested.";
+    add("configured", managed.decryptable ? "ok" : "attention", managed.decryptable ? "Managed settings are decryptable by this Windows account." : "Managed settings cannot be decrypted by this account.");
+    add("running", managed.running ? "ok" : "attention", managed.running ? "The managed process and its current release are running and healthy." : "The managed runtime is not currently verified running.");
+  } else add("configured", saved && configReadable ? "ok" : "attention", saved && configReadable ? "Foreground settings are present; no managed installation is configured." : "Saved startup configuration is missing.");
+  const base = managed?.configured && managed.host ? localBase({ HOST: managed.host, PORT: String(managed.port) }) : configReadable ? localBase(values) : null;
   if (!base) add("local", "attention", "The configured HOST/PORT cannot be checked (or configuration is unreadable).",
     "Review the existing configuration. Use a valid host and a fixed port from 1 to 65535; diagnostic output never prints invalid values.");
   else {
@@ -183,7 +192,8 @@ export async function collectDoctor(options, io = {}) {
     const active = invoke("systemctl", ["--user", "is-active", "--quiet", "hostgate.service"]);
     add("background", active.ok ? "ok" : "unverified", active.ok ? "The Linux user service is active; boot behavior is not verified." : "No active Linux user service was verified.",
       active.ok ? "" : `Foreground operation remains available with ${cli} start. Automatic onboarding needs a working systemd user session.`);
-  } else add("background", "unverified", "Windows background service and autostart are not managed by this CLI.",
+  } else if (managed?.configured) add("background", managed.autostart ? "ok" : "attention", managed.autostart ? "The verified user-logon task will start the supervisor after this account logs in." : "User-logon recovery task is missing or differs from the installed definition.", "User-logon recovery is not a pre-login Windows service or proof of a completed reboot test.");
+  else add("background", "unverified", "Windows background service and autostart are not managed by this CLI.",
     "Keep the foreground terminal open. A separately managed launcher is not verified by this check.");
 
   let url = null;

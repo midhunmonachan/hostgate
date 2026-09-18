@@ -25,10 +25,10 @@ git clone https://github.com/midhunmonachan/hostgate.git
 cd hostgate
 npm.cmd ci
 node .\bin\hostgate.js onboard
-node .\bin\hostgate.js start
+node .\bin\hostgate.js service install --yes
 ```
 
-Keep this terminal open. Press `Ctrl+C` to stop Hostgate.
+The Windows installer validates a separate release, saves the existing configured environment with current-user DPAPI encryption, and registers a user-logon task. You can close the setup terminal after `service status` confirms it is running. For foreground-only operation instead, use `node .\bin\hostgate.js start` and keep that terminal open. Do not install over an unidentified running instance.
 
 ### Linux
 
@@ -58,7 +58,7 @@ node bin/hostgate.js doctor
 
 It reports **OK**, **NEEDS ATTENTION**, or **NOT VERIFIED**, with a next step for each issue. It checks Node.js, required package entry points, npm on PATH, the command shell, saved restart credentials, local health, and an existing matching Tailscale Funnel route. It never installs anything or applies fixes.
 
-**Running is not the same as restart-ready.** A healthy server can still lack saved configuration. Do not stop a working server or replace its credentials just because this check finds missing restart settings. On Windows, keep the foreground terminal open; this CLI does not manage Windows services or autostart. On Linux, doctor also checks whether the user service is active, without changing it.
+**Running is not the same as restart-ready.** A healthy server can still lack saved configuration. Do not stop a working server or replace its credentials just because this check finds missing restart settings. On Windows, foreground-only operation still needs its terminal; managed operation reports its encrypted settings, running process, verified launch, and logon task separately. On Linux, doctor also checks whether the user service is active, without changing it.
 
 For another existing HTTPS deployment, supply its connection URL explicitly:
 
@@ -216,7 +216,61 @@ Hostgate runs as the account that started it. That account may have a different 
 
 ### Does Windows install a background service?
 
-No. Windows runs Hostgate in the foreground with `node .\bin\hostgate.js start`. Linux onboarding uses a user-level systemd service.
+Windows managed startup uses a current-user Task Scheduler logon task and a supervisor, not a pre-login Windows service. It recovers after this user logs in following reboot; it does not run while the user is logged out. Foreground `start` remains available. Linux onboarding still uses the existing user-level systemd service.
+
+## Windows managed startup and recovery
+
+After onboarding, run `node bin/hostgate.js service install --yes`. It requires committed `main` source, a credential-free GitHub `origin`, and npm. Dependencies are installed and checks/tests pass in a new release directory **before** the supervisor starts. Existing untracked developer files are not copied. Installation does not change the Hostgate password or OAuth state.
+
+The installation creates `%USERPROFILE%\.config\hostgate\managed`, restricts its ACL to the current user and SYSTEM, saves the environment as current-user DPAPI ciphertext, and copies the existing Node executable into a private stable runtime. The task runs non-elevated as that same account with no Windows password stored. A logon trigger starts it after sign-in; Task Scheduler retries supervisor failures, and the supervisor restarts crashed server children with backoff. It runs on battery without a scheduled execution-time limit. This is **post-logon recovery**, not a boot-before-login service. Do not use installation to silently change an elevated server's account or token privileges.
+
+Use these from the checkout:
+
+```text
+node bin/hostgate.js service status
+node bin/hostgate.js service start
+node bin/hostgate.js service restart --yes
+node bin/hostgate.js service result REQUEST_ID
+node bin/hostgate.js logs
+node bin/hostgate.js doctor
+```
+
+A restart returns a request ID. Its receipt reports completion or failure. It validates a loopback-only candidate before stopping the managed child, then launches the saved environment on the original address. Explicit restarts drain existing HTTP connections for up to ten seconds; they can interrupt longer calls. This lifecycle drain is not a new normal-operation shell timeout. If activation fails, the previous release is restarted; the receipt distinguishes a successful rollback from recovery that needs attention. No process tree or unrelated process is terminated.
+
+From a **fresh PowerShell terminal**, even without Node or npm on PATH:
+
+```powershell
+& "$HOME\.config\hostgate\managed\hostgate.cmd" service status
+& "$HOME\.config\hostgate\managed\hostgate.cmd" service restart --yes
+& "$HOME\.config\hostgate\managed\hostgate.cmd" doctor
+```
+
+`configured` means the managed manifest exists. `running` requires a recent supervisor heartbeat, live supervisor/child PIDs, matching deployed release, and HTTP health. `restartReady` additionally requires a decryptable saved environment, present runtime files, a matching logon task, and a successful actual start with the same environment/release. None of these claims an actual reboot was tested. Doctor no longer treats a foreground configuration file alone as a verified restart.
+
+A missing task can be recreated with `service repair --yes`; a task with conflicting ownership/arguments is never overwritten. `logs` displays the latest lifecycle events; `-f` currently returns a snapshot, not continuous tailing. Raw shell output, environment values, OAuth credentials, and token bodies are not written to manager logs. Keep the managed directory protected and backed up appropriately: DPAPI data is tied to the Windows user context and is not a portable plaintext configuration.
+
+The saved environment is authoritative for managed launches and is not automatically replaced by a new terminal's variables or by the updater. Ordinary foreground configuration selection still prefers the user/legacy `.env` and falls back to the encrypted environment when no such file exists. Preserve original launcher settings during migration. An environment-only live server requires an explicit verified import: `service install --yes --import-stdin --adopt-pid PID` accepts environment JSON through stdin, never command-line credential values. `--adopt-from PATH` supports migration from another checkout of the same trusted origin. This is an operator migration interface, not permission to read arbitrary processes. Installation validates the selected same-user Node identity before stopping it, only after candidate checks. The CLI itself does not extract process memory.
+
+### Safe GitHub updates
+
+```text
+node bin/hostgate.js update check
+node bin/hostgate.js update apply --yes --expect FULL_40_CHARACTER_COMMIT
+node bin/hostgate.js update status JOB_ID
+node bin/hostgate.js update rollback --yes
+```
+
+`check` reads `origin/main` without checking out files. Applying requires explicit consent and the **full commit returned by check**. A changed remote, changed origin, non-main source branch, dirty tracked files, or **any untracked files** blocks application. Nothing is stashed, reset, force-pushed, or deleted to make the check pass. An existing untracked lockfile is still a reason to stop; review it rather than weakening the safety check.
+
+The worker fetches without force, requires forward ancestry, creates a separate retained Git release, runs `npm ci --ignore-scripts`, then syntax checks and tests with a separate build home and no production OAuth environment. npm must be available; `service install --npm-cli PATH --yes` can explicitly record a private npm CLI installation. Missing npm or failing checks leave the active server unchanged. Package installation, tests, and update code are trusted code from the explicitly approved repository commit; this is not a sandbox or a substitute for source review.
+
+After preparation, the worker rechecks source/deployment stability and asks the supervisor to activate. A failed live activation triggers rollback to the old release. Candidate directories, build fixtures, and receipts remain for diagnosis; automatic cleanup is deliberately not implemented. Updates switch a managed release pointer rather than modifying the developer checkout, its local dependencies, credentials, or OAuth state. The checkout's branch can therefore lag the deployed commit; `update check` reports checkout, deployed, and remote commits separately. Future code must declare `hostgateManagerApi: 1`; the stable supervisor is not silently self-replaced.
+
+Only one apply worker owns the exclusive lock. If a worker crashes, inspect its receipt and service status; `update recover-lock --yes` retains and clears a stale lock only when its owner PID is no longer present. `update rollback --yes` activates the retained previous release without rewriting Git history or credentials. A queued request is not a completed update: inspect the job receipt and `service status`.
+
+This milestone supports managed install/restart/apply/rollback on **Windows**. `update check` works on Linux, while Linux apply continues to require the existing manual/systemd deployment procedure; unsupported managed operations fail without changing it. Existing root and `/hostgate` routes, OAuth/PKCE, scopes, and exactly four full-authority MCP tools are unchanged. No HTTP management endpoint or fifth MCP tool is added.
+
+Platform references: [Task Scheduler logon triggers](https://learn.microsoft.com/en-us/powershell/module/scheduledtasks/new-scheduledtasktrigger), [task recovery settings](https://learn.microsoft.com/en-us/powershell/module/scheduledtasks/new-scheduledtasksettingsset), [current-user DPAPI](https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.protecteddata), and [Node child-process lifecycle](https://nodejs.org/api/child_process.html). Checked September 18, 2026.
 
 ## Development
 

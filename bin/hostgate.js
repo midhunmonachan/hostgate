@@ -6,6 +6,7 @@ import process from "node:process";
 import readline from "node:readline/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
+import { managedHome, managedStatus, savedEnvironment } from "../src/managed-common.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, "..");
@@ -25,13 +26,15 @@ function usage() {
 Usage:
   hostgate onboard      Configure; install/start a user service on Linux only
   hostgate start        Run in the foreground with saved configuration
+  hostgate service      Windows managed install/start/restart/status
+  hostgate update       Check/apply a confirmed GitHub update or rollback
   hostgate doctor [--json] [--url HTTPS_URL]  Check setup without changing it
   hostgate status       Linux: service status; Windows: HTTP health check
   hostgate logs [-f]     Linux: journal logs; Windows: use foreground output
   hostgate help         Show this help
 
-Windows: no automatic Windows service, autostart, or log history is installed.
-Run hostgate start in a terminal and keep it open.
+Windows: service install --yes creates user-logon recovery with protected settings.
+Foreground start remains available. Managed lifecycle logs: hostgate logs.
 `);
 }
 
@@ -95,6 +98,9 @@ function defaultEnvValues() {
   }
   if (existsSync(legacyEnvPath)) {
     return parseEnv(readFileSync(legacyEnvPath, "utf8"));
+  }
+  if (process.platform === "win32" && existsSync(path.join(os.homedir(), ".config/hostgate/managed/environment.dpapi"))) {
+    return new Map(Object.entries(savedEnvironment(managedHome())));
   }
   if (existsSync(envExamplePath)) {
     return parseEnv(readFileSync(envExamplePath, "utf8"));
@@ -343,6 +349,12 @@ WantedBy=default.target
 }
 
 function logs(follow) {
+  if (isWindows && existsSync(path.join(managedHome(), "deployment.json"))) {
+    const log = path.join(managedHome(), "events.jsonl");
+    console.log(existsSync(log) ? readFileSync(log, "utf8").trim().split(/\r?\n/).slice(-100).join("\n") : "No managed lifecycle events yet.");
+    if (follow) console.log("Snapshot only; rerun logs to refresh. Raw tool output is not recorded.");
+    return;
+  }
   if (isWindows) {
     throw new Error("Windows log history is not managed by Hostgate. Run hostgate start and read stdout/stderr in that terminal; configure your own protected log capture if needed.");
   }
@@ -374,6 +386,12 @@ async function status() {
     systemctl(["status", serviceName, "--no-pager"]);
     return;
   }
+  if (existsSync(path.join(managedHome(), "deployment.json"))) {
+    const report = await managedStatus();
+    console.log(JSON.stringify(report, null, 2));
+    process.exitCode = report.running ? 0 : 1;
+    return;
+  }
   const env = serverEnvironment();
   const configuredHost = env.HOST || "127.0.0.1";
   const host = configuredHost === "::" ? "::1" : localTargetHost(configuredHost);
@@ -402,6 +420,16 @@ try {
     case "start":
       await startForeground();
       break;
+    case "service": {
+      const { serviceCli } = await import("../src/service-manager.js");
+      await serviceCli(args, projectRoot, serverEnvironment);
+      break;
+    }
+    case "update": {
+      const { updateCli } = await import("../src/updates.js");
+      await updateCli(args, projectRoot);
+      break;
+    }
     case "doctor": {
       const { collectDoctor, formatDoctor, parseDoctorArgs } = await import("../src/doctor.js");
       let options;
@@ -413,6 +441,7 @@ try {
       }
       const report = await collectDoctor({
         projectRoot, ...options,
+        managed: isWindows ? await managedStatus() : null,
         readConfig: () => ({
           source: existsSync(envPath) ? "user" : existsSync(legacyEnvPath) ? "legacy" : "missing",
           values: Object.fromEntries(defaultEnvValues())
