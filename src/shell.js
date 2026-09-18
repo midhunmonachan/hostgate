@@ -1,3 +1,4 @@
+import { statSync } from "node:fs";
 import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -54,11 +55,15 @@ export function shellCommand(command, platform = process.platform, env = process
   return { cmd: "/bin/bash", args: ["-lc", command] };
 }
 
-export function runShell(command) {
-  const spec = shellCommand(command);
+export function runShell(command, options = {}) {
+  const cwd = options.cwd === undefined ? os.homedir() : path.resolve(os.homedir(), options.cwd);
+  if (!statSync(cwd).isDirectory()) throw new Error("Shell working directory must exist.");
+  // Reassert an explicit cwd after Linux login profiles, without changing parent state.
+  const script = options.cwd !== undefined && process.platform !== "win32" ? "cd -- '" + cwd.replaceAll("'", "'\"'\"'") + "' || exit;\n" + command : command;
+  const spec = shellCommand(script);
   return new Promise((resolve) => {
     const child = spawn(spec.cmd, spec.args, {
-      cwd: os.homedir(),
+      cwd,
       env: shellEnvironment(),
       shell: false,
       windowsHide: true,
@@ -72,10 +77,10 @@ export function runShell(command) {
     child.stdout.on("data", (chunk) => { stdout += chunk; });
     child.stderr.on("data", (chunk) => { stderr += chunk; });
     child.once("error", (error) => {
-      resolve({ exitCode: null, signal: null, stdout, stderr: `${stderr}\n${error.message}`.trim() });
+      resolve({ ...(options.cwd === undefined ? {} : { cwd, pid: child.pid ?? null }), exitCode: null, signal: null, stdout, stderr: `${stderr}\n${error.message}`.trim() });
     });
     child.once("close", (exitCode, signal) => {
-      resolve({ exitCode, signal, stdout, stderr });
+      resolve({ ...(options.cwd === undefined ? {} : { cwd, pid: child.pid ?? null }), exitCode, signal, stdout, stderr });
     });
   });
 }

@@ -11,3 +11,7 @@ oauth-state.json
 *.log
 *.tgz
 coverage/
+
+# Named-host credential stores never belong in source control.
+credentials.dpapi
+credentials.json

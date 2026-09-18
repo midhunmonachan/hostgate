@@ -10,7 +10,7 @@ import { localWindowsPath } from "./service-plan.js";
 
 const sha = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
 const privatePath = (file) => /(^|[\\/])(\.config|\.local|node_modules)([\\/]|$)/i.test(file) ||
-  /(^|[\\/])(\.env(?:\..*)?|environment\.dpapi|oauth-state\.json|deployment\.json)$/i.test(file) && !/(^|[\\/])\.env\.example$/i.test(file);
+  /(^|[\\/])(\.env(?:\..*)?|environment\.dpapi|credentials\.(?:dpapi|json)|oauth-state\.json|deployment\.json)$/i.test(file) && !/(^|[\\/])\.env\.example$/i.test(file);
 export function planContext(repoRoot) {
   // OS-provided path/runtime metadata only; never enumerate/read launcher values.
   return { platform: process.platform, repoRoot, home: os.homedir(), nodePath: process.execPath, nodeVersion: process.versions.node };
@@ -34,7 +34,7 @@ export function metadataOnly(filename) {
 function publicBytes(filename, maximum) {
   // This reader is reachable only for code/executable/package metadata, not any
   // environment or deployment file. Presence probes never call it.
-  if (/(^|[\\/])(\.env(?:\..*)?|environment\.dpapi|oauth-state\.json|deployment\.json)$/i.test(filename) ||
+  if (/(^|[\\/])(\.env(?:\..*)?|environment\.dpapi|credentials\.(?:dpapi|json)|oauth-state\.json|deployment\.json)$/i.test(filename) ||
       metadataOnly(filename) !== "file" || fs.statSync(filename).size > maximum) throw new Error("Cannot read public planner input.");
   return fs.readFileSync(filename);
 }

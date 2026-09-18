@@ -1,6 +1,7 @@
 // A plan is data, never an installer invocation. No environment reader or mutable
 // manager module is imported here. The probe interface contains only observations.
 import crypto from "node:crypto";
+import { hostId } from "./host-paths.js";
 import path from "node:path";
 
 export const PLAN_VERSION = 1;
@@ -65,14 +66,14 @@ export function approvalToken(plan) {
 }
 const xmlEscape = (value) => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
 
-export function taskSpecification(directory, commit, sid) {
+export function taskSpecification(directory, commit, sid, profileId = null) {
   directory = localWindowsPath(directory);
   if (!/^[a-f0-9]{40}$/.test(commit) || !/^S-1-(?:[0-9]+-)*[0-9]+$/.test(sid)) throw new Error("Task planning requires a verified commit and Windows SID.");
   const runtime = path.win32.join(directory, "runtime", commit);
   const executable = path.win32.join(runtime, "node.exe");
   const supervisor = path.win32.join(runtime, "supervisor.js");
   const args = `"${supervisor}" "${directory}"`;
-  const name = "Hostgate-" + crypto.createHash("sha256").update(sid).digest("hex").slice(0, 12);
+  const name = "Hostgate-" + crypto.createHash("sha256").update(sid + (profileId ? ":" + hostId(profileId) : "")).digest("hex").slice(0, 12);
   // This describes the existing installer, including its enabled logon trigger.
   // Validation-only MUST NOT be confused with creating a disabled/inert task.
   const xml = `<?xml version="1.0" encoding="UTF-16"?>
@@ -99,7 +100,8 @@ export function collectInstallPlan(options, context, probes) {
   const root = localWindowsPath(context.repoRoot);
   const home = localWindowsPath(context.home);
   const nodePath = localWindowsPath(context.nodePath);
-  const directory = path.win32.join(home, ".config", "hostgate", "managed");
+  const directory = context.profile ? path.win32.join(home, ".config", "hostgate", "hosts", hostId(context.profile.id), "managed") : path.win32.join(home, ".config", "hostgate", "managed");
+  if (context.profile) plan.profile = { id: context.profile.id, name: context.profile.name, endpoint: context.profile.endpoint, cwd: context.profile.cwd };
   plan.paths = { repository: root, destination: directory };
   let repo;
   try { repo = probes.repository(root); plan.repository = repo; }
@@ -120,7 +122,7 @@ export function collectInstallPlan(options, context, probes) {
     check("npm", plan.npm.valid && plan.npm.runtimeCompatible === true ? "ok" : "blocked", "Inspect npm CLI/package metadata and Node engine compatibility only. Supply --npm-cli if it is not beside Node; npm is never executed.");
   } catch { check("npm", "blocked", "npm metadata is unavailable or invalid; no package command was run."); }
   const observed = {};
-  for (const [name, filename] of Object.entries({ directory, manifest: path.win32.join(directory, "deployment.json"), encryptedStore: path.win32.join(directory, "environment.dpapi"), launcher: path.win32.join(directory, "hostgate.cmd"), userEnv: path.win32.join(home, ".config", "hostgate", ".env"), repositoryEnv: path.win32.join(root, ".env") })) {
+  for (const [name, filename] of Object.entries({ directory, manifest: path.win32.join(directory, "deployment.json"), encryptedStore: path.win32.join(directory, "environment.dpapi"), launcher: path.win32.join(directory, "hostgate.cmd"), userEnv: context.profile ? path.win32.join(directory, "..", "credentials.dpapi") : path.win32.join(home, ".config", "hostgate", ".env"), repositoryEnv: context.profile ? path.win32.join(directory, "..", "credentials.dpapi") : path.win32.join(root, ".env") })) {
     try { observed[name] = probes.presence(filename); } catch { observed[name] = "inaccessible"; }
   }
   plan.pathStates = observed;
@@ -137,7 +139,7 @@ export function collectInstallPlan(options, context, probes) {
     check("acl", platform.acl?.readable && platform.acl.createChildIndicated ? "unverified" : "blocked", "Read the nearest existing directory ACL and assess indicative child-creation rights. Effective write/change-permission feasibility is not exercised.");
     if (repo?.commit && platform.sid) {
       try {
-        const task = taskSpecification(directory, repo.commit, platform.sid);
+        const task = taskSpecification(directory, repo.commit, platform.sid, context.profile?.id);
         plan.task = { ...task, validation: probes.validateTask(task), commandExecuted: false, registered: false };
         check("task", plan.task.validation.xmlValid === true && plan.task.validation.commandMatches === true && plan.task.validation.existingTask === false ? "ok" : "blocked", "Validate exact task XML/command using TASK_VALIDATE_ONLY (1), and check name availability. Never register, update, disable, or run a task.");
       } catch { check("task", "blocked", "Task syntax/command validation was unavailable. No task registration was attempted."); }
@@ -155,13 +157,13 @@ export function formatInstallPlan(report) {
     "", `Approval token: ${report.approvalToken}`, report.tokenPurpose, "No installation or activation ran. No values were imported and no files/tasks were created."].join("\n");
 }
 
-export async function servicePlanCli(args, repoRoot) {
+export async function servicePlanCli(args, repoRoot, profile = null) {
   let options;
   try { options = parsePlanArgs(args); } catch (error) { console.error(error.message); return 2; }
   if (options.help) { console.log(HELP); return 0; }
   try {
     const { planContext, createPlanProbes } = await import("./plan-probes.js");
-    const context = planContext(repoRoot);
+    const context = { ...planContext(repoRoot), ...(profile ? { profile } : {}) };
     const report = collectInstallPlan(options, context, createPlanProbes(context, options));
     console.log(options.json ? JSON.stringify(report, null, 2) : formatInstallPlan(report));
     return report.exitCode;

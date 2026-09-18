@@ -17,8 +17,8 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "check": "node --check src/server.js && node --check src/shell.js && node --check bin/hostgate.js && node --check test/shell.test.js && node --check test/integration.test.js && node --check src/doctor.js && node --check test/doctor.test.js && node --check src/oauth-validation.js && node --check test/oauth-validation.test.js && node --check test/oauth-http.test.js && node --check src/perimeter.js && node --check test/perimeter.test.js && node --check test/perimeter-http.test.js && node --check src/managed-common.js && node --check src/managed-child.js && node --check src/supervisor.js && node --check src/service-manager.js && node --check src/updates.js && node --check test/managed.test.js && node --check test/updates.test.js && node --check src/service-plan.js && node --check src/plan-probes.js && node --check test/service-plan.test.js && node --check test/service-plan-windows.test.js",
-    "test": "node --test test/shell.test.js test/integration.test.js test/doctor.test.js test/oauth-validation.test.js test/oauth-http.test.js test/perimeter.test.js test/perimeter-http.test.js test/managed.test.js test/updates.test.js test/service-plan.test.js test/service-plan-windows.test.js"
+    "check": "node --check src/server.js && node --check src/shell.js && node --check bin/hostgate.js && node --check test/shell.test.js && node --check test/integration.test.js && node --check src/doctor.js && node --check test/doctor.test.js && node --check src/oauth-validation.js && node --check test/oauth-validation.test.js && node --check test/oauth-http.test.js && node --check src/perimeter.js && node --check test/perimeter.test.js && node --check test/perimeter-http.test.js && node --check src/managed-common.js && node --check src/managed-child.js && node --check src/supervisor.js && node --check src/service-manager.js && node --check src/updates.js && node --check test/managed.test.js && node --check test/updates.test.js && node --check src/service-plan.js && node --check src/plan-probes.js && node --check test/service-plan.test.js && node --check test/service-plan-windows.test.js && node --check src/host-paths.js && node --check src/host-profiles.js && node --check src/host-runtime.js && node --check src/host-cli.js && node --check test/hosts.test.js && node --check test/hosts-http.test.js",
+    "test": "node --test test/shell.test.js test/integration.test.js test/doctor.test.js test/oauth-validation.test.js test/oauth-http.test.js test/perimeter.test.js test/perimeter-http.test.js test/managed.test.js test/updates.test.js test/service-plan.test.js test/service-plan-windows.test.js test/hosts.test.js test/hosts-http.test.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.21.0",
@@ -28,5 +28,6 @@
   "engines": {
     "node": ">=22"
   },
-  "hostgateManagerApi": 1
+  "hostgateManagerApi": 1,
+  "hostgateHostProfilesApi": 1
 }

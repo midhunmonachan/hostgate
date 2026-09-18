@@ -142,3 +142,10 @@ test("source mutation during preparation prevents activation", async () => {
   }), /changed during preparation/);
   assert.equal(fs.readFileSync(path.join(f.repo, "concurrent-work.txt"), "utf8"), "other work");
 });
+
+
+test("profile releases cannot lose routing support during update preparation", async () => {
+  const f = fixture();
+  await assert.rejects(prepareRelease({ repoRoot: f.repo, commit: f.second, directory: f.manager, npmCli: f.npmCli, profileId: crypto.randomUUID() }), /named-host routing/);
+  assert.equal(readJson(path.join(f.manager, "deployment.json")).current.commit, f.first);
+});

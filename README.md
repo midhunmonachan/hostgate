@@ -298,6 +298,60 @@ This milestone supports managed install/restart/apply/rollback on **Windows**. `
 
 Platform references: [Task Scheduler logon triggers](https://learn.microsoft.com/en-us/powershell/module/scheduledtasks/new-scheduledtasktrigger), [task recovery settings](https://learn.microsoft.com/en-us/powershell/module/scheduledtasks/new-scheduledtasksettingsset), [current-user DPAPI](https://learn.microsoft.com/en-us/dotnet/api/system.security.cryptography.protecteddata), and [Node child-process lifecycle](https://nodejs.org/api/child_process.html). Checked September 18, 2026.
 
+## More than one computer: named host profiles
+
+Use **one independent Hostgate server and ChatGPT connection per computer**, not a central shell proxy. Existing unprofiled operation is unchanged and never migrates its credentials/state automatically. Creating profiles does not activate or restart any server.
+
+On the first computer, create its own local identity; on the second, repeat with a different name and HTTPS origin:
+
+```powershell
+node .\bin\hostgate.js host add "Primary laptop" --local --endpoint https://primary.example/hostgate/mcp --cwd "C:\Work" --yes
+node .\bin\hostgate.js host add "Second laptop" --local --endpoint https://second.example/hostgate/mcp --cwd "C:\Work" --yes
+```
+
+Run each command **on the named computer**, with its real existing working directory and verified HTTPS proxy URL. Local IDs are generated UUIDs, not aliases or machine names. Profiles are also bound to the local platform/hostname to catch accidental catalog copies; that is not hardware attestation. Names (case-insensitively), IDs and HTTPS origins must be distinct within a catalog, including retired records. The endpoint is immutable in this first version. No network request is made by add/list/inspect/select/rename/remove.
+
+Configure each host separately with `host configure NAME --import-stdin --yes`. Supply local JSON containing exactly `HOST` (loopback), `PORT` (a fixed port as a string), `HOSTGATE_OAUTH_USERNAME`, and `HOSTGATE_OAUTH_PASSWORD`. It never inherits the legacy server's or another profile's credentials, prints their values, or overwrites an existing credential store. Use different credentials per computer; keep input files out of source control and chat. Windows stores current-user DPAPI ciphertext; Linux stores a private mode-0600 file. Host ID and endpoint are bound inside the protected configuration. Start only when separately authorized with `host start NAME`; this is foreground operation.
+
+A catalog can also describe another computer without storing its credentials or executing anything there:
+
+```text
+node bin/hostgate.js host add "Second laptop" --remote --id UUID_FROM_SECOND_LAPTOP --platform win32 --endpoint https://second.example/hostgate/mcp --cwd "C:\Work" --yes
+node bin/hostgate.js host list
+node bin/hostgate.js host inspect "Primary laptop"
+node bin/hostgate.js host rename "Primary laptop" "Main laptop" --yes
+node bin/hostgate.js host select "Main laptop" --context ProjectA/chat1 --cwd "C:\Work\ProjectA" --yes
+node bin/hostgate.js host inspect --context ProjectA/chat1
+node bin/hostgate.js host route "Second laptop" --context ProjectB/chat2
+node bin/hostgate.js host remove "Second laptop" --yes
+```
+
+For a remote record, copy the **non-secret ID, canonical host name and endpoint** from that computer's inspection. Linux remote profiles use `--platform linux` and an absolute Linux cwd. A local catalog label that does not match the target server's name will be rejected at execution; it is not permission to rewrite the routing card. Remote start/configure/service/update/log commands are refused rather than accidentally operating on the current laptop.
+
+**Select stores only a project/chat-specific routing card, never a global execution default.** All runtime/lifecycle commands still require an explicit name/ID. Registry mutations use an exclusive lock and atomic replacement; competing writers fail without losing selections. An interrupted edit can leave a lock that needs local inspection. Removal retires the entry and its selections, reserves its identity/origin, and retains all credentials, OAuth state, deployments and logs. It does not revoke a remote connection. A running local process or configured manager blocks removal. Renaming a running local profile makes further requests fail closed until an explicit restart; IDs and state paths do not change.
+
+### ChatGPT connection and project routing
+
+Create separately named connections, for example **Hostgate - Primary laptop** and **Hostgate - Second laptop**, each using that host's exact endpoint and its own OAuth sign-in. Current official developer-mode instructions use **Settings → Security and login → Developer mode**, then **Plugins → plus → name/description → connection URL**; availability depends on workspace policy. After deployment, refresh that connection's tools and start a new conversation. Use the official guide when your UI differs. No ChatGPT settings are changed by this CLI.
+
+Put the output of `host route NAME --context PROJECT/CHAT [--cwd ABSOLUTE_PATH]` in that project's instructions or the chat. It supplies a `target` object containing the immutable host ID, canonical name, and endpoint, plus an explicit context and working directory. Instruct ChatGPT to use **only that named connection**, preserve the target exactly, and stop on mismatch—never substitute another connection or modify the target to make a call pass.
+
+In profiled mode, **all four tools require the exact target and contextId**. Shell also requires a per-call cwd; relative file paths require cwd. The server compares ID, name and endpoint **before** invoking a handler. Missing/mismatched targets fail without the requested side effect; explicitly targeted calls reaching a legacy server fail too. Tool descriptions, initialization, health and results identify the host. Shell/write retain their destructive warnings and unrestricted OS-account capability.
+
+Each call gets server-generated request/execution IDs, a host-scoped OAuth connection ID, and a context key. An optional OpenAI conversation identifier is hashed for correlation; it is not authentication. No shared current directory, shell session, or current project is mutated between requests. Native children run concurrently; logs contain completion metadata, not commands, output, file contents, paths, passwords or tokens.
+
+**Boundary:** Hostgate cannot read the user's natural-language intention or independently establish a ChatGPT project-to-host binding. It rejects a misaddressed structured request, but cannot detect a caller that supplies an entirely different, internally consistent routing card. Context labels/optional conversation metadata are not authorization. Full authorized shell access is deliberately not a filesystem/process sandbox: two commands intentionally editing the same files can conflict, and an authorized account can deliberately access its other profiles. Use distinct directories or Git worktrees for independent work.
+
+### Per-host state and operations
+
+Host catalog: `~/.config/hostgate/hosts.json`. Each ID has its own `~/.config/hostgate/hosts/ID/` credential and managed-deployment directory, and `~/.local/share/hostgate/hosts/ID/` OAuth state, runtime status and execution logs. Relative paths above follow the OS account's home. Do not copy private stores between computers. OAuth client registrations, codes and tokens are independent; profiled state and opaque token records are bound to ID/resource. Cross-host credentials/state copies fail closed. Profile OAuth requires the canonical endpoint in the `resource` parameter; root and `/hostgate` route aliases advertise that same resource. Existing unprofiled tokens/routes keep their old behavior.
+
+`host status NAME`, `host doctor NAME`, and `host logs NAME` inspect only that local profile. Status requires identity-matched health; a remote record is not treated as a locally running host. Windows `host service NAME plan|prepare` retains the read-only/no-secret contract and uses distinct profile paths/task names. `host service NAME install --yes` uses only that profile's separately configured environment; legacy PID adoption is not performed. Other service/update operations use the same explicit-host prefix and require their existing confirmations. Per-host launchers remain pinned to their profile; an update cannot drop named-host support silently.
+
+Linux named-host foreground operation is supported; automatic per-profile systemd installation and managed update application remain unsupported, and the legacy systemd service is never implicitly reused. Initial-adoption/partial-install recovery limitations remain as documented above. No real two-computer ChatGPT UI test or production activation is implied by isolated automated tests.
+
+Official references, checked September 18, 2026: [connect/refresh MCP connections](https://developers.openai.com/plugins/deploy/connect-chatgpt), [conversation metadata](https://developers.openai.com/plugins/reference#_meta-fields-the-client-provides), [MCP resource/audience binding](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization).
+
 ## Development
 
 ```bash

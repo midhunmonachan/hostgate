@@ -7,11 +7,11 @@ import { fileURLToPath } from "node:url";
 import { alive, digest, health, healthUrl, readJson, savedEnvironment, sleep, windows, writeJson } from "./managed-common.js";
 
 export function stageEnvironment(environment) {
-  return { ...Object.fromEntries(Object.entries(environment).filter(([key]) => !["HOST", "PORT"].includes(key.toUpperCase()))), HOST: "127.0.0.1", PORT: "0" };
+  return { ...Object.fromEntries(Object.entries(environment).filter(([key]) => !["HOST", "PORT"].includes(key.toUpperCase()))), HOST: "127.0.0.1", PORT: "0", ...(environment.HOSTGATE_PROFILE_ID ? { HOSTGATE_PROFILE_STAGING: "1" } : {}) };
 }
 export async function startChild(config, release, environment, { staged = false } = {}) {
   const child = fork(config.childPath, [release.path], {
-    execPath: config.nodePath, execArgv: [], cwd: config.repoRoot, env: staged ? stageEnvironment(environment) : environment,
+    execPath: config.nodePath, execArgv: [], cwd: config.workingDirectory || config.repoRoot, env: staged ? stageEnvironment(environment) : environment,
     windowsHide: true, stdio: ["ignore", "pipe", "pipe", "ipc"]
   });
   // Never persist raw stdout/stderr: arbitrary future code might print environment values.
@@ -28,7 +28,7 @@ export async function startChild(config, release, environment, { staged = false 
   try {
     const ready = await readiness;
     const url = staged ? `http://127.0.0.1:${ready.port}/hostgate/health` : healthUrl(environment);
-    if (!await health(url)) throw new Error("Server health verification failed.");
+    if (!await health(url, 3000, config.profileId ? { hostId: config.profileId, endpoint: config.profileEndpoint } : null)) throw new Error("Server health verification failed.");
     if (child.exitCode !== null || child.signalCode !== null) throw new Error("Server exited during verification.");
     return child;
   } catch (error) { await stopChild(child); throw error; }
@@ -51,6 +51,7 @@ export async function supervise(directory) {
   const acquired = await new Promise((resolve) => { lock.once("error", () => resolve(false)); lock.listen(pipe, () => resolve(true)); });
   if (!acquired) return;
   const environment = savedEnvironment(directory, config.adapterPath);
+  if (config.profileId && environment.HOSTGATE_PROFILE_ID !== config.profileId) throw new Error("Managed profile environment mismatch.");
   const environmentHash = digest(fs.readFileSync(path.join(directory, "environment.dpapi")));
   let currentChild = null;
   const state = { schemaVersion: 1, supervisorPid: process.pid, instance: crypto.randomUUID(), phase: "starting", environmentHash };
@@ -124,6 +125,7 @@ export async function supervise(directory) {
             const candidate = path.resolve(job.release.path);
             const releases = path.resolve(directory, "releases") + path.sep;
             if (!candidate.startsWith(releases) || !/^[a-f0-9]{40}$/.test(job.release.commit) || !fs.existsSync(path.join(candidate, "src", "server.js"))) throw new Error("Invalid managed release.");
+            if (config.profileId && readJson(path.join(candidate, "package.json"))?.hostgateHostProfilesApi !== 1) throw new Error("Release lacks named-host routing support.");
             result = await transition(job.release);
           } else throw new Error("Unsupported manager request.");
         } catch (error) {
@@ -137,7 +139,11 @@ export async function supervise(directory) {
         state.phase = "recovering"; save();
         event("child-exited", { attempt: ++failures });
         await sleep(Math.min(60000, 1000 * 2 ** Math.min(failures - 1, 6)));
-        try { await launch(config.current); event("recovered", { childPid: currentChild.pid }); } catch { currentChild = null; }
+        try { await launch(config.current); event("recovered", { childPid: currentChild.pid }); } catch {
+          // Publishing status/events can fail after startChild succeeded. Retain ownership
+          // until that exact child is stopped; otherwise it can strand the listener.
+          await stopChild(currentChild); currentChild = null;
+        }
       } else if (Date.now() - Date.parse(state.lastSuccessfulStart) > 60000) failures = 0;
       await sleep(500);
     }

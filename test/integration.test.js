@@ -252,6 +252,12 @@ test("isolated local CLI, OAuth, and MCP smoke test", { timeout: 90000 }, async 
     assert.equal(existsSync(deniedPath), false);
   });
 
+  await t.test("legacy endpoint rejects an explicitly named-host request before any write", async () => {
+    const file = path.join(home, "named-host-must-not-land-on-legacy.txt");
+    const result = await rpc(base, allToken, "tools/call", { name: "write", arguments: { path: file, content: "not written", contextId: "project/chat", target: { hostId: crypto.randomUUID(), hostName: "Second laptop", endpoint: "https://second.example.test/mcp" } } });
+    assert.equal(result.isError, true); assert.equal(existsSync(file), false);
+  });
+
   await t.test("authorized file tools round-trip UTF-8 only inside the isolated home", async () => {
     const content = "Hostgate write/read test passed.\nUnicode: caf\u00e9 \u2603 \ud83d\ude80\n";
     const relative = "files with spaces/smoke.txt";

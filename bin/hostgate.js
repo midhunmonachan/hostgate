@@ -26,6 +26,7 @@ function usage() {
 Usage:
   hostgate onboard      Configure; install/start a user service on Linux only
   hostgate start        Run in the foreground with saved configuration
+  hostgate host         Explicit named hosts, routing cards and isolated local runtimes
   hostgate service      Windows managed install/start/restart/status
   hostgate service plan Read-only install preview (prepare is an alias)
   hostgate update       Check/apply a confirmed GitHub update or rollback
@@ -414,6 +415,11 @@ async function status() {
 try {
   const [command, ...args] = process.argv.slice(2);
   switch (command || "help") {
+    case "host": {
+      const { hostCli } = await import("../src/host-cli.js");
+      await hostCli(args, projectRoot);
+      break;
+    }
     case "onboard":
     case "setup":
       await onboard();
